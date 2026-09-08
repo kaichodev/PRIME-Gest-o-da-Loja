@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PRIME • Gestão da Loja</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div>
+    <h1>PRIME • Gestão da Loja</h1>
+    <small>Produção • Pedidos • Estoque • Custos • Lucro • Caixa</small>
+  </div>
+  <div class="actions"><span id="cloudStatus" class="cloud-status">☁️ Nuvem: não configurada</span><button id="btnCloud" class="secondary">Configurar nuvem</button><button id="btnEmailBackup" class="secondary">Enviar backup por e-mail</button><button id="btnBackup" class="secondary">Exportar backup</button></div>
+</header>
+
+<main class="wrap">
+  <nav id="tabs" class="tabs">
+    <button class="tab active" data-tab="producao">Produção</button>
+    <button class="tab" data-tab="finalizados">Finalizados</button>
+    <button class="tab" data-tab="estoque">Estoque / Compras</button>
+    <button class="tab" data-tab="gastos">Saídas / Gastos</button>
+    <button class="tab" data-tab="modelos">Modelos</button>
+    <button class="tab" data-tab="cores">Cores</button>
+    <button class="tab" data-tab="financeiro">Financeiro</button>
+  </nav>
+
+  <section class="dashboard-grid">
+    <article class="card"><span class="muted">Produzir agora</span><strong id="kProduzir">0</strong><span class="muted">pedidos em aberto</span></article>
+    <article class="card"><span class="muted">Vencem hoje</span><strong id="kHojePrazo">0</strong><span class="muted">prioridade</span></article>
+    <article class="card"><span class="muted">Atrasados</span><strong id="kAtrasados">0</strong><span class="muted">atenção imediata</span></article>
+    <article class="card"><span class="muted">Peças a fabricar</span><strong id="kPecas">0</strong><span class="muted">quantidade total aberta</span></article>
+    <article class="card"><span class="muted">Prontos / retirada</span><strong id="kProntos">0</strong><span class="muted">aguardando entrega</span></article>
+  </section>
+
+  <section id="producao" class="screen active">
+    <div class="toolbar">
+      <input id="busca" class="search" placeholder="Buscar pedido, cliente, modelo, cor...">
+      <button id="btnNovoPedido" class="primary">+ Novo pedido</button>
+    </div>
+
+    <div class="panel">
+      <strong>⚠️ Prioridades de fabricação</strong>
+      <div id="alerts"></div>
+    </div>
+
+    <div class="tablebox">
+      <table>
+        <thead><tr>
+          <th>Pedido</th><th>Prazo</th><th>Modelo</th><th>Qtd.</th><th>Cores</th>
+          <th>Personalização / fabricação</th><th>Produção</th><th>Entrega</th><th>Ações</th>
+        </tr></thead>
+        <tbody id="ordersBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="finalizados" class="screen">
+    <div class="tablebox">
+      <table>
+        <thead><tr><th>Pedido</th><th>Finalizado</th><th>Cliente</th><th>Modelo</th><th>Qtd.</th><th>Total</th><th>Entrega</th><th>Ações</th></tr></thead>
+        <tbody id="doneBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="estoque" class="screen">
+    <div class="toolbar">
+      <strong>Estoque e compras da loja</strong>
+      <span class="spacer"></span>
+      <button id="btnNovoItem" class="secondary">+ Item</button>
+      <button id="btnNovaCompra" class="primary">+ Compra / entrada</button>
+    </div>
+    <div class="tablebox">
+      <table>
+        <thead><tr><th>SKU</th><th>Item</th><th>Categoria</th><th>Unidade</th><th>Estoque</th><th>Mínimo</th><th>Custo</th><th>Valor estoque</th><th>Ações</th></tr></thead>
+        <tbody id="stockBody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel compact"><strong>Compras / entradas</strong></div>
+    <div class="tablebox">
+      <table>
+        <thead><tr><th>Data</th><th>Fornecedor</th><th>Item</th><th>Qtd.</th><th>Custo unit.</th><th>Total</th><th>Pagamento</th><th>Comprovante</th><th>Status</th><th>Ações</th></tr></thead>
+        <tbody id="purchaseBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="gastos" class="screen">
+    <div class="toolbar">
+      <strong>Saídas de dinheiro</strong>
+      <span class="spacer"></span>
+      <button id="btnNovaSaida" class="primary">+ Registrar saída</button>
+    </div>
+    <div class="tablebox">
+      <table>
+        <thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>Valor</th><th>Pagamento</th><th>Comprovante</th><th>Status</th><th>Ações</th></tr></thead>
+        <tbody id="expenseBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="modelos" class="screen">
+    <div class="toolbar">
+      <strong>Modelos cadastrados</strong>
+      <span class="spacer"></span>
+      <button id="btnNovoModelo" class="primary">+ Novo modelo</button>
+    </div>
+    <div id="modelsCards" class="modelgrid"></div>
+  </section>
+
+  <section id="cores" class="screen">
+    <div class="panel">
+      <form id="colorForm" class="toolbar">
+        <input name="name" placeholder="Nome da cor" required>
+        <input name="hex" type="color" value="#78bde3">
+        <select name="material">
+          <option>PLA</option><option>PETG</option><option>ABS</option><option>TPU</option><option>Outro</option>
+        </select>
+        <button class="primary" type="submit">Cadastrar cor</button>
+      </form>
+      <div id="colorList" class="colors"></div>
+    </div>
+  </section>
+
+  <section id="financeiro" class="screen">
+    <div class="panel">
+      <div class="formgrid">
+        <div class="field">
+          <label>Período</label>
+          <select id="finPeriod">
+            <option value="today">Hoje</option>
+            <option value="7">Últimos 7 dias</option>
+            <option value="15">Últimos 15 dias</option>
+            <option value="month" selected>Mês atual</option>
+            <option value="all">Tudo</option>
+          </select>
+        </div>
+        <div class="field"><label>Saldo inicial do caixa</label><input id="openingBalance" type="number" step=".01"></div>
+        <div class="field"><label>% para reinvestir</label><input id="reinvestPct" type="number" min="0" max="100" step="1"></div>
+        <div class="field"><label>Meta de reserva diária R$</label><input id="dailyReserve" type="number" min="0" step=".01"></div>
+      </div>
+    </div>
+
+    <div class="finance-grid">
+      <article class="card"><span class="muted">Faturamento</span><strong id="finRevenue"></strong><span class="muted">pedidos finalizados</span></article>
+      <article class="card"><span class="muted">Custo direto estimado</span><strong id="finDirect"></strong><span class="muted">custo dos produtos vendidos</span></article>
+      <article class="card"><span class="muted">Lucro bruto</span><strong id="finGross"></strong><span class="muted">vendas − custo direto</span></article>
+      <article class="card"><span class="muted">Saídas / gastos</span><strong id="finExpenses"></strong><span class="muted">despesas operacionais</span></article>
+      <article class="card"><span class="muted">Lucro líquido estimado</span><strong id="finNet"></strong><span class="muted">lucro bruto − gastos</span></article>
+      <article class="card"><span class="muted">Saldo geral de caixa</span><strong id="finCash"></strong><span class="muted">saldo inicial + vendas − saídas − compras</span></article>
+      <article class="card"><span class="muted">Reinvestimento sugerido</span><strong id="finReinvest"></strong><span class="muted">percentual do lucro líquido</span></article>
+      <article class="card"><span class="muted">Disponível após reserva</span><strong id="finAvailable"></strong><span class="muted">lucro − reinvestimento − reserva</span></article>
+    </div>
+
+    <div class="panel"><div id="financeAdvice"></div></div>
+    <div class="panel compact"><strong>Rentabilidade por modelo</strong><div class="muted">Preencha o custo unitário estimado em cada modelo para obter uma margem mais realista.</div></div>
+    <div class="tablebox">
+      <table>
+        <thead><tr><th>Modelo</th><th>Vendidos</th><th>Faturamento</th><th>Custo direto</th><th>Lucro bruto</th><th>Margem</th><th>Reinvestimento sugerido</th></tr></thead>
+        <tbody id="profitBody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<div id="modal" class="modal">
+  <div class="modalbox">
+    <div class="modalhead"><h2 id="modalTitle"></h2><button id="btnCloseModal" class="secondary">✕</button></div>
+    <form id="form"></form>
+  </div>
+</div>
+
+<div id="detailModal" class="modal">
+  <div class="modalbox">
+    <div class="modalhead"><h2>Detalhes do pedido</h2><button id="btnCloseDetail" class="secondary">✕</button></div>
+    <div id="detailContent"></div>
+  </div>
+</div>
+
+<div id="imgModal" class="modal">
+  <div class="modalbox imagebox">
+    <img id="bigImg" alt="Imagem ampliada">
+  </div>
+</div>
+
+<script src="cloud-config.js"></script>
+<script src="app.js"></script>
+<script src="cloud.js"></script>
+</body>
+</html>

@@ -1,0 +1,127 @@
+PRIME GESTÃO V9 — GITHUB + GOOGLE DRIVE + BACKUP POR E-MAIL
+
+COMO FUNCIONA
+
+O site continua sendo estático e pode ficar no GitHub Pages.
+Os dados não dependem mais apenas do computador de cada pessoa:
+
+GitHub Pages
+    ↓
+Google Apps Script
+    ↓
+Google Drive da PRIME (prime-dados.json)
+
+Todos que usarem o mesmo endereço do Apps Script + mesmo PIN verão o mesmo banco de dados.
+
+Também há:
+- botão "Enviar backup por e-mail";
+- backup automático diário aproximadamente às 23h;
+- arquivo JSON salvo no Google Drive;
+- sincronização automática entre os computadores.
+
+IMPORTANTE
+O e-mail NÃO deve ser usado como banco de dados. Ele é usado como backup.
+O banco principal fica no Google Drive da conta PRIME.
+
+PASSO 1 — CRIAR A PASTA NO DRIVE
+
+1. Entre no Google Drive usando a conta da PRIME.
+2. Crie uma pasta, por exemplo:
+   PRIME - Sistema de Gestão
+3. Abra essa pasta.
+4. Na URL do navegador haverá algo parecido com:
+   drive.google.com/drive/folders/1ABCDEF...
+5. Copie somente o ID depois de /folders/.
+
+PASSO 2 — CRIAR O GOOGLE APPS SCRIPT
+
+1. Na conta Google da PRIME, abra:
+   https://script.google.com/
+2. Crie um novo projeto.
+3. Apague o conteúdo de Code.gs.
+4. Copie todo o conteúdo do arquivo:
+   google-apps-script/Code.gs
+5. Salve o projeto.
+
+PASSO 3 — CONFIGURAR AS PROPRIEDADES
+
+No Apps Script:
+Configurações do projeto → Propriedades do script
+
+Crie estas 3 propriedades:
+
+DATA_FOLDER_ID
+Valor: ID da pasta criada no Drive.
+
+PRIME_EMAIL
+Valor: e-mail da PRIME que receberá os backups.
+
+APP_PIN
+Valor: escolha um PIN/senha para a equipe.
+
+Não coloque APP_PIN dentro dos arquivos publicados no GitHub.
+
+PASSO 4 — AUTORIZAR BACKUP DIÁRIO
+
+No editor do Apps Script:
+1. Selecione a função createDailyBackupTrigger.
+2. Clique em Executar.
+3. Autorize o acesso ao Google Drive e Gmail.
+
+Isso cria um envio automático diário de backup.
+
+PASSO 5 — PUBLICAR O BACKEND
+
+Apps Script:
+Implantar → Nova implantação → Aplicativo da Web
+
+Configuração:
+Executar como: Eu
+Quem tem acesso: Qualquer pessoa
+
+Clique em Implantar.
+Copie a URL que termina em /exec.
+
+PASSO 6 — CONFIGURAR O SITE
+
+Você pode fazer de duas formas.
+
+FORMA MAIS FÁCIL:
+Abra o sistema e clique em "Configurar nuvem".
+Cole a URL /exec e digite o PIN.
+
+OU:
+
+Abra cloud-config.js e cole:
+webAppUrl: "SUA_URL_DO_APPS_SCRIPT"
+
+O PIN NÃO deve ser gravado nesse arquivo. O sistema pede o PIN no navegador.
+
+PASSO 7 — GITHUB PAGES
+
+Envie para seu repositório estes arquivos:
+index.html
+styles.css
+app.js
+cloud.js
+cloud-config.js
+
+Não é necessário enviar a pasta google-apps-script ao site.
+Ela é apenas o código do servidor Google.
+
+Depois ative GitHub Pages no repositório.
+
+OBSERVAÇÕES
+
+- O sistema mantém uma cópia local para funcionar rapidamente.
+- Quando há internet ele salva as alterações no Google Drive.
+- A cada 12 segundos ele consulta se outro usuário fez alterações.
+- Poucas pessoas usando ao mesmo tempo funciona bem.
+- Como o banco atual é salvo como um único JSON, se duas pessoas editarem exatamente ao mesmo tempo, a última gravação pode prevalecer.
+- Para uma empresa pequena com poucos usuários isso costuma ser suficiente; se o sistema crescer, o próximo passo é migrar para Firebase/Firestore ou Supabase.
+
+SEGURANÇA
+
+O GitHub Pages é público, por isso nenhuma senha pode ficar escrita no JavaScript.
+A URL do Apps Script pode ser pública; o backend só libera os dados quando o PIN correto é enviado.
+Use um PIN forte e compartilhe apenas com a equipe.

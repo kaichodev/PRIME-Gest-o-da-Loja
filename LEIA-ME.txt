@@ -1,0 +1,15 @@
+PRIME Gestão V8
+
+Arquivos:
+- index.html
+- styles.css
+- app.js
+
+Para usar no VS Code:
+1. Abra a pasta prime_gestao_v8.
+2. Clique com o botão direito em index.html.
+3. Escolha "Open with Live Server".
+
+O sistema salva os dados no localStorage do navegador.
+Ele tenta importar automaticamente dados das chaves antigas:
+prime_gestao_v7, prime_gestao_v4 e prime_gestao_v3.
