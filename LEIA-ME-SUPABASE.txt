@@ -1,0 +1,18 @@
+PRIME GESTÃO V11 — SUPABASE
+
+1) No Supabase > SQL Editor > New query, abra o arquivo supabase-setup.sql, copie tudo, cole e clique Run.
+2) Aguarde a mensagem: PRIME V11 pronta para sincronização!
+3) Envie estes arquivos para o MESMO repositório GitHub Pages, substituindo os antigos:
+   index.html
+   styles.css
+   app.js
+   supabase-config.js
+   supabase-cloud.js
+4) O primeiro acesso mostrará login. Use o usuário criado em Authentication > Users.
+5) Se este navegador já tiver dados locais e o Supabase estiver vazio, eles serão enviados automaticamente na primeira entrada.
+6) Depois disso, o Supabase vira a fonte compartilhada. Outros navegadores logados recebem os mesmos dados.
+
+IMPORTANTE:
+- A publishable key no frontend é normal. A segurança está nas políticas RLS e no login.
+- Nunca publique service_role, secret key ou senha do banco.
+- A versão V11 preserva a interface atual e sincroniza o estado completo do sistema. As tabelas normalizadas criadas anteriormente ficam disponíveis para uma migração futura mais avançada.

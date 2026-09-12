@@ -12,7 +12,7 @@
     <h1>PRIME • Gestão da Loja</h1>
     <small>Produção • Pedidos • Estoque • Custos • Lucro • Caixa</small>
   </div>
-  <div class="actions"><span id="cloudStatus" class="cloud-status">☁️ Nuvem: não configurada</span><button id="btnCloud" class="secondary">Configurar nuvem</button><button id="btnEmailBackup" class="secondary">Enviar backup por e-mail</button><button id="btnBackup" class="secondary">Exportar backup</button></div>
+  <div class="actions"><span id="cloudStatus" class="cloud-status">☁️ Nuvem: iniciando...</span><button id="btnSyncNow" class="secondary">Sincronizar agora</button><button id="btnEmailBackup" class="secondary">Enviar backup por e-mail</button><button id="btnBackup" class="secondary">Exportar backup</button></div>
 </header>
 
 <main class="wrap">
@@ -186,8 +186,18 @@
   </div>
 </div>
 
-<script src="cloud-config.js"></script>
+
+<div id="cloudGate" class="cloud-gate active">
+  <div class="cloud-gate-box">
+    <h2>☁️ PRIME — Nuvem compartilhada</h2>
+    <p id="cloudGateText">Conectando ao banco de dados da PRIME...</p>
+    <div id="cloudGateActions"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="supabase-config.js"></script>
 <script src="app.js"></script>
-<script src="cloud.js"></script>
+<script src="supabase-cloud.js"></script>
 </body>
 </html>

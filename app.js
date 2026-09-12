@@ -55,6 +55,7 @@ const getItem = (id) => db.items.find(x=>x.id===id);
 function save(){
   try{
     localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+    window.dispatchEvent(new CustomEvent("prime:data-changed"));
   }catch(err){
     alert("O navegador ficou sem espaço. Reduza o tamanho das imagens/comprovantes e exporte um backup.");
   }
