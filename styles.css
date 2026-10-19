@@ -165,3 +165,6 @@ th,td{padding:12px 12px}
 .top-actions{flex-wrap:nowrap}
 }
 @media(max-width:760px){#btnNovoPedido{right:12px;bottom:82px;padding:12px 18px}}
+
+/* Integração Supabase: somente estado de conexão/login */
+.prime-login{position:fixed;inset:0;background:#211a16f2;z-index:10000;display:grid;place-items:center;padding:18px}.prime-login[hidden]{display:none}.prime-login-box{background:white;width:min(420px,100%);padding:28px;border-radius:18px;box-shadow:0 20px 60px #0004}.prime-login-box h2{margin:0 0 8px}.prime-login-box p{color:#63584f}.prime-login-box label{display:block;font-weight:700;margin:16px 0}.prime-login-box input{display:block;width:100%;padding:12px;margin-top:6px;border:1px solid #d8cec7;border-radius:9px;font:inherit}.prime-login-box button{width:100%;padding:13px}.prime-login-box small{color:#776c65}.prime-cloud-tools{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}.prime-cloud-tools button{background:#ffffff15;color:white;border:1px solid #ffffff22;border-radius:7px;padding:7px;font-size:11px;cursor:pointer}

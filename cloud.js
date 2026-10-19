@@ -1,196 +1,100 @@
-
+/* PRIME Gestão 1.0 — camada de dados compartilhados. Não altera o layout nem as regras de negócio. */
 (() => {
-"use strict";
-
-const DATA_KEY = "prime_gestao_v8";
-const URL_KEY = "prime_cloud_webapp_url";
-const PIN_KEY = "prime_cloud_pin";
-const LAST_REMOTE_KEY = "prime_cloud_last_remote_update";
-
-const cfg = window.PRIME_CLOUD_CONFIG || {};
-let webAppUrl = localStorage.getItem(URL_KEY) || cfg.webAppUrl || "";
-let pin = sessionStorage.getItem(PIN_KEY) || "";
-let lastLocal = localStorage.getItem(DATA_KEY) || "";
-let syncing = false;
-let initialized = false;
-
-const statusEl = document.getElementById("cloudStatus");
-const btnCloud = document.getElementById("btnCloud");
-const btnEmail = document.getElementById("btnEmailBackup");
-
-function setStatus(text,type=""){
-  if(!statusEl) return;
-  statusEl.textContent = text;
-  statusEl.className = "cloud-status" + (type ? " "+type : "");
-}
-
-function normalizeUrl(url){
-  return String(url||"").trim();
-}
-
-async function api(action, extra={}){
-  if(!webAppUrl) throw new Error("URL da nuvem não configurada");
-  if(!pin) throw new Error("PIN da nuvem não informado");
-
-  const body = JSON.stringify({action,pin,...extra});
-  const res = await fetch(webAppUrl,{
-    method:"POST",
-    redirect:"follow",
-    headers:{"Content-Type":"text/plain;charset=utf-8"},
-    body
-  });
-
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); }
-  catch { throw new Error("Resposta inválida do Google Apps Script"); }
-
-  if(!data.ok) throw new Error(data.error || "Erro na nuvem");
-  return data;
-}
-
-function askConfig(){
-  const current = webAppUrl && !webAppUrl.includes("COLE") ? webAppUrl : "";
-  const url = prompt("Cole a URL do Google Apps Script publicada como Aplicativo da Web (/exec):", current);
-  if(url===null) return false;
-  const clean = normalizeUrl(url);
-  if(!clean){
-    localStorage.removeItem(URL_KEY);
-    webAppUrl="";
-    setStatus("☁️ Nuvem: não configurada");
-    return false;
+  'use strict';
+  const URL = 'https://txcxzufxonzdsgnxfwvq.supabase.co';
+  const PUBLIC_KEY = 'sb_publishable_ZGBX7SJX8wSiGqwBghTM7w_kJ_MATE5';
+  const DATA_ID = 'prime_shared_v1';
+  let client, version = 0, ready = false, saving = false, pending = null, blocked = false, lastSynced = '';
+  window.primeCloudReady = false;
+  const $ = id => document.getElementById(id);
+  function status(message) { const el = $('cloudStatus'); if(el) el.textContent = '☁️ ' + message; }
+  function message(text) { $('primeLoginMessage').textContent = text; }
+  function downloadEmergency(data) {
+    const blob = new Blob([JSON.stringify(data,null,2)], {type:'application/json'});
+    const link = document.createElement('a'); link.href = URL.createObjectURL(blob);
+    link.download = 'prime-alteracoes-nao-salvas-'+new Date().toISOString().slice(0,10)+'.json';link.click();setTimeout(()=>URL.revokeObjectURL(link.href),3000);
   }
-
-  const newPin = prompt("Digite o PIN da PRIME para acessar os dados na nuvem:", pin || "");
-  if(newPin===null || !newPin.trim()) return false;
-
-  webAppUrl = clean;
-  pin = newPin.trim();
-  localStorage.setItem(URL_KEY,webAppUrl);
-  sessionStorage.setItem(PIN_KEY,pin);
-  setStatus("☁️ Nuvem: conectando...","sync");
-  return true;
-}
-
-async function initialSync(){
-  if(!webAppUrl){
-    setStatus("☁️ Nuvem: não configurada");
-    return;
+  async function readRemote() {
+    const {data,error} = await client.from('prime_data').select('dados,version').eq('id',DATA_ID).maybeSingle();
+    if(error) throw error;
+    return data;
   }
-  if(!pin){
-    const p = prompt("Digite o PIN da PRIME para conectar à nuvem:");
-    if(!p) { setStatus("☁️ Nuvem: PIN necessário","err"); return; }
-    pin=p.trim();
-    sessionStorage.setItem(PIN_KEY,pin);
+  function showLogin(text) {
+    ready=false;window.primeCloudReady=false;$('primeLogin').hidden=false;
+    message(text||'');status('Aguardando login');
   }
-
-  syncing=true;
-  setStatus("☁️ Nuvem: sincronizando...","sync");
-  try{
-    const remote = await api("load");
-    const local = localStorage.getItem(DATA_KEY) || "";
-
-    if(remote.data){
-      const remoteJson = typeof remote.data==="string" ? remote.data : JSON.stringify(remote.data);
-      if(remoteJson !== local){
-        localStorage.setItem(DATA_KEY,remoteJson);
-        localStorage.setItem(LAST_REMOTE_KEY,remote.updatedAt || "");
-        setStatus("☁️ Nuvem: dados recebidos","ok");
-        setTimeout(()=>location.reload(),250);
-        return;
-      }
-    }else if(local){
-      await api("save",{data:local});
+  async function loadRemote() {
+    status('Carregando banco...');
+    const row=await readRemote();
+    version=Number(row?.version||0);
+    if(row?.dados && Object.keys(row.dados).length) {
+      const value=row.dados;
+      if(!Array.isArray(value.orders)||!Array.isArray(value.items)||!Array.isArray(value.models)) throw Error('Dados remotos em formato inesperado.');
+      // A aplicação principal mantém o estado em variável privada. Sincronizamos via evento.
+      window.dispatchEvent(new CustomEvent('prime:cloud-load',{detail:value}));
     }
-
-    lastLocal = localStorage.getItem(DATA_KEY) || "";
-    localStorage.setItem(LAST_REMOTE_KEY,remote.updatedAt || "");
-    initialized=true;
-    setStatus("☁️ Nuvem: conectado","ok");
-  }catch(err){
-    setStatus("☁️ Nuvem: erro","err");
-    console.error(err);
-    alert("Não foi possível conectar à nuvem: "+err.message);
-  }finally{
-    syncing=false;
+    ready=true;window.primeCloudReady=true;blocked=false;lastSynced=JSON.stringify(row?.dados||{});
+    $('primeLogin').hidden=true;status('Online • dados compartilhados');
   }
-}
-
-async function pushIfChanged(){
-  if(!initialized || syncing || !webAppUrl || !pin) return;
-  const current = localStorage.getItem(DATA_KEY) || "";
-  if(!current || current===lastLocal) return;
-
-  syncing=true;
-  setStatus("☁️ Salvando...","sync");
-  try{
-    const result = await api("save",{data:current});
-    lastLocal=current;
-    if(result.updatedAt) localStorage.setItem(LAST_REMOTE_KEY,result.updatedAt);
-    setStatus("☁️ Nuvem: salvo","ok");
-  }catch(err){
-    setStatus("☁️ Falha ao salvar","err");
-    console.error(err);
-  }finally{
-    syncing=false;
-  }
-}
-
-async function pullIfNewer(){
-  if(!initialized || syncing || !webAppUrl || !pin) return;
-  try{
-    const remote=await api("meta");
-    const last=localStorage.getItem(LAST_REMOTE_KEY)||"";
-    if(remote.updatedAt && remote.updatedAt!==last){
-      syncing=true;
-      setStatus("☁️ Atualizando dados...","sync");
-      const data=await api("load");
-      if(data.data){
-        const remoteJson=typeof data.data==="string"?data.data:JSON.stringify(data.data);
-        const local=localStorage.getItem(DATA_KEY)||"";
-        if(remoteJson!==local){
-          localStorage.setItem(DATA_KEY,remoteJson);
-          localStorage.setItem(LAST_REMOTE_KEY,data.updatedAt||"");
-          setTimeout(()=>location.reload(),250);
-          return;
+  async function flush() {
+    if(saving||blocked||!ready||!pending)return;
+    saving=true;
+    let activeSnapshot=null;
+    try {
+      while(pending && !blocked) {
+        const snapshot=pending;activeSnapshot=snapshot;pending=null;
+        const {data,error}=await client.rpc('prime_save_snapshot',{p_id:DATA_ID,p_expected_version:version,p_dados:snapshot});
+        if(error) throw error;
+        if(Number(data)<0){
+          blocked=true;pending=snapshot;
+          downloadEmergency(snapshot);
+          status('Conflito • backup baixado');
+          alert('Outro funcionário atualizou o banco antes de você. Suas alterações foram baixadas em JSON para não perdê-las. Atualize a página para carregar os dados atuais e revise antes de importar.');
+          break;
         }
+        version=Number(data);lastSynced=JSON.stringify(snapshot);status('Online • salvo');
       }
-      localStorage.setItem(LAST_REMOTE_KEY,data.updatedAt||"");
-    }
-  }catch(err){
-    console.warn("Falha ao consultar nuvem",err);
-  }finally{
-    syncing=false;
+    } catch(err) {
+      blocked=true;
+      if(!pending) pending=activeSnapshot;
+      if(pending) downloadEmergency(pending);
+      status('Falha ao salvar • atenção');
+      alert('Não foi possível confirmar o salvamento na nuvem: '+err.message+'\nNão feche a página antes de exportar um backup.');
+    } finally {saving=false;}
   }
-}
-
-btnCloud?.addEventListener("click",async()=>{
-  if(askConfig()){
-    initialized=false;
-    await initialSync();
+  window.primeCloudQueueSave = snapshot => {
+    if(!ready||blocked) {alert('Banco não está pronto ou há um conflito. Nenhuma alteração foi enviada.');return;}
+    pending=snapshot;status('Salvando...');void flush();
+  };
+  async function refresh() {
+    if(!ready||saving||pending||blocked)return;
+    try {
+      const row=await readRemote();
+      if(Number(row?.version||0)!==version) {
+        version=Number(row.version);lastSynced=JSON.stringify(row.dados);
+        window.dispatchEvent(new CustomEvent('prime:cloud-load',{detail:row.dados}));
+        status('Online • atualizado');
+      }
+    } catch(e) {status('Sem conexão • tente novamente');}
   }
-});
-
-btnEmail?.addEventListener("click",async()=>{
-  if(!webAppUrl || !pin){
-    if(!askConfig()) return;
-  }
-  try{
-    setStatus("☁️ Enviando backup...","sync");
-    await pushIfChanged();
-    const r=await api("emailBackup");
-    setStatus("☁️ Backup enviado","ok");
-    alert("Backup enviado para "+(r.email || "o e-mail configurado da PRIME")+".");
-  }catch(err){
-    setStatus("☁️ Erro no backup","err");
-    alert("Não foi possível enviar o backup: "+err.message);
-  }
-});
-
-window.addEventListener("online",()=>{ if(webAppUrl) initialSync(); });
-
-setInterval(pushIfChanged,1800);
-setInterval(pullIfNewer,12000);
-
-initialSync();
+  document.addEventListener('DOMContentLoaded',async()=>{
+    const form=$('primeLoginForm');
+    if(!window.supabase?.createClient){showLogin('Biblioteca Supabase não carregou. Verifique a internet.');return;}
+    client=window.supabase.createClient(URL,PUBLIC_KEY,{auth:{persistSession:true,autoRefreshToken:true}});
+    form.addEventListener('submit',async e=>{
+      e.preventDefault();message('Entrando...');
+      const {error}=await client.auth.signInWithPassword({email:$('primeEmail').value.trim(),password:$('primePassword').value});
+      $('primePassword').value='';
+      if(error){message('Falha no login: '+error.message);return;}
+      try{await loadRemote()}catch(err){showLogin('Falha ao carregar banco: '+err.message)}
+    });
+    const {data:{session}}=await client.auth.getSession();
+    if(session){try{await loadRemote()}catch(err){showLogin('Falha ao carregar banco: '+err.message)}}else showLogin('');
+    setInterval(refresh,6000);
+    client.auth.onAuthStateChange((event)=>{if(event==='SIGNED_OUT')showLogin('Sessão encerrada.');});
+    const tools=document.createElement('div');tools.className='prime-cloud-tools';tools.innerHTML='<button type="button" id="primeSync">Atualizar nuvem</button><button type="button" id="primeLogout">Sair</button>';
+    $('cloudStatus')?.after(tools);
+    $('primeSync').onclick=refresh;
+    $('primeLogout').onclick=async()=>{if(pending||saving){alert('Aguarde o salvamento antes de sair.');return;}await client.auth.signOut()};
+  });
 })();

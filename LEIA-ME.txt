@@ -1,29 +1,16 @@
-PRIME 1.0 — versão ajustada (offline / localStorage)
+PRIME Gestão 1.0 — TESTE COM SUPABASE
 
-Abra index.html. Coloque logo-prime.png na mesma pasta para exibir sua logo.
-Seus dados atuais continuam funcionando (mesma chave de armazenamento).
-Faça um backup (Exportar backup) antes de atualizar os arquivos.
+1. Execute SUPABASE_EXECUTAR_SQL.sql no SQL Editor do novo projeto.
+2. Confirme que prime_data e prime_operators existem, com RLS e políticas de acesso dos 2 operadores.
+3. Publique esta pasta em um NOVO repositório/branch de teste (não substitua V11).
+4. Abra index.html por um servidor local (VS Code Live Server) ou GitHub Pages.
+5. Entre com e-mail e senha de um dos dois operadores.
+6. Teste em dois navegadores. A cada 6 segundos a página busca alterações remotas.
 
-Correções
-- Consumo de insumos agora é gravado no pedido ao finalizar; reabrir, editar ou excluir reverte exatamente o que foi baixado (sem baixa duplicada).
-- Caixa considera apenas pedidos pagos e contas pagas; compras de estoque não entram no lucro (só o consumo), evitando custo em dobro.
-- Retiradas e despesas "Material / Insumo" antigas não reduzem mais o lucro.
-- Compras com frete e situação (Pago / A pagar); recuperação do investimento cresce a cada compra.
-- Trocar o modelo no pedido não apaga mais o nome digitado.
-- Imagens são reduzidas automaticamente (sem limite de 1,5 MB e sem estourar o armazenamento).
-
-Novos recursos
-- Finalizar com botão Desfazer; clique no status Pago/Pendente para confirmar pagamento.
-- Filtros na Produção: hoje, atrasados, não pagos, prontos; busca por telefone e nº do pedido.
-- Botão WhatsApp nos detalhes (mensagem pronta, com cobrança se pendente).
-- Estoque: materiais necessários para a fila de produção, faltas e itens abaixo do mínimo.
-- Financeiro: a receber, a pagar, ticket médio, compras de estoque, retiradas; rentabilidade ordenada por lucro.
-- Atalhos: "/" busca, "N" novo pedido, Esc fecha janelas.
-- Celular: menu inferior, janelas em folha; lembrete de backup semanal.
-
-Rodada 2 — layout
-- Janela de pedido refeita: duas colunas no computador, folha que sobe de baixo no celular, barra fixa com Total e botão Salvar sempre visível.
-- Pedido: botões de prazo (Hoje, Amanhã, +3d, +7d), quantidade com + e −, forma e situação do pagamento em botões, clientes anteriores sugeridos.
-- Indicadores e busca aparecem só em Produção; coluna Prazo e botões Ver, Editar, Finalizar na lista.
-- Produtos em cartões compactos; Financeiro em três blocos; Cores e Estoque com espaçamento corrigido.
-- Celular: faixa compacta de indicadores e botão flutuante "Novo pedido".
+ATENÇÃO: este teste utiliza um documento JSON compartilhado, não tabelas normalizadas.
+Salvamentos usam versão atômica: se dois funcionários editarem a mesma versão,
+o segundo recebe um aviso e um backup JSON de suas alterações, sem sobrescrever o outro.
+O sistema NÃO oferece fila offline nem mesclagem automática de alterações.
+Não importe backup antigo sem revisar, pois substituirá todo o banco compartilhado.
+NÃO cole chave secret/service_role no site. A chave secreta compartilhada no chat deve ser revogada.
+Os arquivos originais enviados foram preservados; alterações limitadas à conexão e indicadores de nuvem.

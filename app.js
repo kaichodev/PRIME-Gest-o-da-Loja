@@ -2,8 +2,8 @@
 (() => {
 "use strict";
 
-const STORAGE_KEY = "prime_gestao_v8";
-const LEGACY_KEYS = ["prime_gestao_v7","prime_gestao_v4","prime_gestao_v3"];
+const STORAGE_KEY = "prime_1_0_nuvem_teste_cache_v1";
+const LEGACY_KEYS = []; // Não importar dados de versões anteriores automaticamente.
 
 const $ = (id) => document.getElementById(id);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
@@ -23,7 +23,7 @@ let prodFilter="all";
 function orderFilter(o){if(prodFilter==="today")return o.deadline===today();if(prodFilter==="late")return urgencyClass(o)==="order-late";if(prodFilter==="unpaid")return o.paymentStatus!=="Pago";if(prodFilter==="ready")return["Pronto","Aguardando retirada"].includes(o.status);return true}
 function waLink(o){const d=String(o.phone||"").replace(/\D/g,"");if(d.length<10)return"";const n=d.startsWith("55")?d:"55"+d,nm=o.custom?.name||o.client,st=o.completedAt?"está pronto":"está em produção";const msg=o.paymentStatus!=="Pago"?`Olá, ${o.client}! Seu pedido (${nm}) ${st}. O pagamento de ${money(o.total)} ainda está pendente.`:`Olá, ${o.client}! Seu pedido (${nm}) ${st}.`;return `<a class="secondary btnlink" target="_blank" rel="noopener" href="https://wa.me/${n}?text=${encodeURIComponent(msg)}">WhatsApp</a>`}
 function loadDb(){
-  const direct = localStorage.getItem(STORAGE_KEY);
+  const direct = null; // Não iniciar com cache local para evitar sobrescrever o banco.
   if(direct){
     try { return JSON.parse(direct); } catch {}
   }
@@ -37,6 +37,7 @@ function loadDb(){
 }
 
 let db = loadDb();
+window.addEventListener("prime:cloud-load", e => { db=e.detail; db.colors=Array.isArray(db.colors)?db.colors:[]; db.models=Array.isArray(db.models)?db.models:[]; db.orders=Array.isArray(db.orders)?db.orders:[]; db.items=Array.isArray(db.items)?db.items:[]; db.purchases=Array.isArray(db.purchases)?db.purchases:[]; db.expenses=Array.isArray(db.expenses)?db.expenses:[]; db.settings=db.settings||{}; db.recoveryLog=Array.isArray(db.recoveryLog)?db.recoveryLog:[]; render(); });
 db.colors = Array.isArray(db.colors) ? db.colors : [];
 db.models = Array.isArray(db.models) ? db.models : [];
 db.orders = Array.isArray(db.orders) ? db.orders : [];
@@ -60,6 +61,8 @@ const getModel = (id) => db.models.find(x=>x.id===id);
 const getItem = (id) => db.items.find(x=>x.id===id);
 
 function save(){
+  if (!window.primeCloudReady) { toast("Entre na nuvem antes de editar."); return; }
+  window.primeCloudQueueSave(JSON.parse(JSON.stringify(db)));
   try{
     localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
     window.dispatchEvent(new CustomEvent("prime:data-changed"));
@@ -540,12 +543,12 @@ function backup(){
   const blob = new Blob([JSON.stringify(db,null,2)],{type:"application/json"});
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "prime-backup-"+today()+".json";db.settings.lastBackup=today();localStorage.setItem(STORAGE_KEY,JSON.stringify(db));toast("Backup exportado");
+  a.download = "prime-backup-"+today()+".json";db.settings.lastBackup=today();toast("Backup exportado");
   a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
 
-function importBackupFile(file){if(!file)return;const reader=new FileReader();reader.onload=()=>{try{const data=JSON.parse(reader.result);if(!data||!Array.isArray(data.orders))throw new Error();if(!confirm("Importar este backup e substituir os dados atuais deste protótipo?"))return;db=data;db.colors=db.colors||[];db.models=db.models||[];db.orders=db.orders||[];db.items=db.items||[];db.purchases=db.purchases||[];db.expenses=db.expenses||[];db.settings=db.settings||{};db.recoveryLog=db.recoveryLog||[];save();alert("Backup restaurado com sucesso.");}catch{alert("Arquivo de backup inválido.")}};reader.readAsText(file)}
+function importBackupFile(file){if(!window.primeCloudReady){toast("Entre na nuvem antes de importar.");return;}if(!file)return;const reader=new FileReader();reader.onload=()=>{try{const data=JSON.parse(reader.result);if(!data||!Array.isArray(data.orders))throw new Error();if(!confirm("ATENÇÃO: substituir TODOS os dados compartilhados da PRIME pelos dados deste backup?"))return;db=data;db.colors=db.colors||[];db.models=db.models||[];db.orders=db.orders||[];db.items=db.items||[];db.purchases=db.purchases||[];db.expenses=db.expenses||[];db.settings=db.settings||{};db.recoveryLog=db.recoveryLog||[];save();alert("Backup restaurado com sucesso.");}catch{alert("Arquivo de backup inválido.")}};reader.readAsText(file)}
 
 function render(){
   renderOrders();
@@ -642,7 +645,7 @@ document.addEventListener("change",e=>{
   if(el) updateOrder(el.dataset.id,el.dataset.key,el.value);
 });
 
-save();
-{const lb=db.settings.lastBackup;if(db.orders.length&&(!lb||(Date.now()-parseDate(lb))/864e5>7))setTimeout(()=>toast("Faça um backup: seus dados ficam só neste navegador."),1500);}
+render();
+{const lb=db.settings.lastBackup;if(false&&db.orders.length&&(!lb||(Date.now()-parseDate(lb))/864e5>7))setTimeout(()=>toast("Faça um backup: seus dados ficam só neste navegador."),1500);}
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeModal();$("detailModal").classList.remove("active");$("imgModal").classList.remove("active");return}if(e.target.closest("input,select,textarea")||e.ctrlKey||e.metaKey||e.altKey)return;if(e.key==="/"){e.preventDefault();$("busca").focus()}else if(e.key.toLowerCase()==="n"&&!document.querySelector(".modal.active")&&$("producao").classList.contains("active")){e.preventDefault();openOrder()}});
 })();
