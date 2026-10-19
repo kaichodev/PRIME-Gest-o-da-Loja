@@ -18,6 +18,10 @@ const parseDate = (s) => {
 const fmt = (s) => s ? parseDate(s).toLocaleDateString("pt-BR") : "-";
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+function toast(msg,undo){let box=$("toasts");if(!box){box=document.createElement("div");box.id="toasts";box.setAttribute("role","status");document.body.appendChild(box);}const t=document.createElement("div");t.className="toast";t.textContent=msg;if(undo){const b=document.createElement("button");b.textContent="Desfazer";b.onclick=()=>{undo();t.remove();};t.appendChild(b);}box.appendChild(t);setTimeout(()=>t.remove(),undo?7000:3500);}
+let prodFilter="all";
+function orderFilter(o){if(prodFilter==="today")return o.deadline===today();if(prodFilter==="late")return urgencyClass(o)==="order-late";if(prodFilter==="unpaid")return o.paymentStatus!=="Pago";if(prodFilter==="ready")return["Pronto","Aguardando retirada"].includes(o.status);return true}
+function waLink(o){const d=String(o.phone||"").replace(/\D/g,"");if(d.length<10)return"";const n=d.startsWith("55")?d:"55"+d,nm=o.custom?.name||o.client,st=o.completedAt?"está pronto":"está em produção";const msg=o.paymentStatus!=="Pago"?`Olá, ${o.client}! Seu pedido (${nm}) ${st}. O pagamento de ${money(o.total)} ainda está pendente.`:`Olá, ${o.client}! Seu pedido (${nm}) ${st}.`;return `<a class="secondary btnlink" target="_blank" rel="noopener" href="https://wa.me/${n}?text=${encodeURIComponent(msg)}">WhatsApp</a>`}
 function loadDb(){
   const direct = localStorage.getItem(STORAGE_KEY);
   if(direct){
@@ -40,6 +44,9 @@ db.items = Array.isArray(db.items) ? db.items : [];
 db.purchases = Array.isArray(db.purchases) ? db.purchases : [];
 db.expenses = Array.isArray(db.expenses) ? db.expenses : [];
 db.settings = db.settings || {};
+db.recoveryLog = Array.isArray(db.recoveryLog) ? db.recoveryLog : [];
+db.models.forEach(m=>{m.recipe=Array.isArray(m.recipe)?m.recipe:[]});
+db.items.forEach(i=>{i.recovered=Number(i.recovered||0);i.recoveryTarget=Number(i.recoveryTarget||0);i.packageQty=Number(i.packageQty||0)});
 
 if(!db.colors.length){
   db.colors = [
@@ -65,13 +72,10 @@ function save(){
 function imageToData(file){
   return new Promise((resolve)=>{
     if(!file) return resolve("");
-    if(file.size > 1500000){
-      alert("Use imagens de até 1,5 MB.");
-      return resolve("");
-    }
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result || "");
-    reader.onerror = () => resolve("");
+    if(!file.type.startsWith("image/")){toast("Envie um arquivo de imagem.");return resolve("");}
+    const reader=new FileReader();
+    reader.onerror=()=>resolve("");
+    reader.onload=()=>{const img=new Image();img.onerror=()=>resolve("");img.onload=()=>{const k=Math.min(1,1000/Math.max(img.width,img.height)),c=document.createElement("canvas");c.width=Math.round(img.width*k);c.height=Math.round(img.height*k);c.getContext("2d").drawImage(img,0,0,c.width,c.height);resolve(c.toDataURL("image/jpeg",.78));};img.src=reader.result;};
     reader.readAsDataURL(file);
   });
 }
@@ -114,135 +118,84 @@ function actionFooter(){
 }
 
 function deadlineClass(date){
-  const diff = Math.round((parseDate(date)-parseDate(today()))/86400000);
-  return diff < 0 ? "late" : diff === 0 ? "today" : diff <= 2 ? "soon" : "ok";
+  const now=new Date(); const due=date?new Date(date+"T23:59:59"):now;
+  if(now>due) return "late";
+  const left=due-now; return left<=12*3600000?"warning":"ok";
 }
 function deadlineText(date){
-  const diff = Math.round((parseDate(date)-parseDate(today()))/86400000);
-  if(diff < 0) return `${-diff}d atrasado`;
-  if(diff === 0) return "Hoje";
-  if(diff === 1) return "Amanhã";
-  return `${diff} dias`;
+  const now=new Date(), due=date?new Date(date+"T23:59:59"):now, h=Math.ceil((due-now)/3600000);
+  if(h<0) return `${Math.abs(h)}h atrasado`; if(h<=12) return `${h}h restantes`; return fmt(date);
 }
 
 function activateTab(tabId){
   document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x.dataset.tab===tabId));
   document.querySelectorAll(".screen").forEach(x=>x.classList.toggle("active", x.id===tabId));
+  const names={producao:"Produção",finalizados:"Finalizados",estoque:"Estoque",gastos:"Saídas",modelos:"Produtos",receitas:"Receitas",cores:"Cores",financeiro:"Financeiro"};
+  if($("pageTitle")) $("pageTitle").textContent=names[tabId]||"PRIME";
+  if($("btnNovoPedido")) $("btnNovoPedido").style.display=tabId==="producao"?"":"none";
+  const kp=document.querySelector(".dashboard-grid");if(kp)kp.style.display=tabId==="producao"?"":"none";
+  if($("busca"))$("busca").style.display=tabId==="producao"?"":"none";
 }
 
 /* PEDIDOS */
+function defaultDeadline(){const d=new Date();d.setDate(d.getDate()+1);return localISO(d)}
+function orderSpecificFields(model,order={}){
+  if(!model) return "";
+  const two=/2\s*cores|duas\s*cores/i.test(model.name);
+  const name=esc(order.custom?.name||order.notes||"");
+  if(two) return `<div class="specific-box span4"><div class="specific-title">Personalização</div><div class="formgrid compact"><div class="field span2"><label>Nome do chaveiro</label><input name="customName" value="${name}" placeholder="Ex.: Rodrigo" required></div><div class="field"><label>Base (B)</label><select name="baseColor">${(model.colors||[]).map(id=>{const c=getColor(id);return c?`<option value="${esc(id)}" ${id===order.custom?.baseColor?"selected":""}>${esc(c.name)}</option>`:""}).join("")}</select></div><div class="field"><label>Letra (L)</label><select name="letterColor">${(model.colors||[]).map(id=>{const c=getColor(id);return c?`<option value="${esc(id)}" ${id===order.custom?.letterColor?"selected":""}>${esc(c.name)}</option>`:""}).join("")}</select></div></div></div>`;
+  return `<div class="specific-box span4"><div class="specific-title">Personalização</div><div class="field"><label>Nome / texto / instrução principal</label><input name="customName" value="${name}" placeholder="O que precisa ser personalizado?"></div></div>`;
+}
+function updateOrderTotal(){const f=$("form"),el=$("orderTotal");if(!el||!f)return;const g=n=>Number(f.elements[n]?.value||0);el.textContent=money(Math.max(0,g("qty")*g("unitPrice")-g("discount")))}
+function seg(name,opts,val){return `<div class="seg-group">${opts.map(o=>`<label class="seg"><input type="radio" name="${name}" value="${o}" ${o===val?"checked":""}><span>${o}</span></label>`).join("")}</div>`}
 function openOrder(order=null){
-  if(!db.models.length){
-    alert("Cadastre pelo menos um modelo antes de criar um pedido.");
-    activateTab("modelos");
-    return;
-  }
-
-  const due = new Date();
-  due.setDate(due.getDate()+3);
-  const selectedModel = order?.modelId && getModel(order.modelId) ? order.modelId : db.models[0].id;
-
-  showModal(order ? "Editar pedido" : "Novo pedido", `
-    <div class="formgrid">
-      <input type="hidden" name="editId" value="${esc(order?.id || "")}">
-      <div class="field"><label>Pedido</label><input name="number" value="${esc(order?.number || "#"+String(db.orders.length+1).padStart(4,"0"))}" required></div>
-      <div class="field"><label>Data</label><input name="date" type="date" value="${esc(order?.date || today())}" required></div>
-      <div class="field"><label>Prazo</label><input name="deadline" type="date" value="${esc(order?.deadline || localISO(due))}" required></div>
-      <div class="field"><label>Cliente</label><input name="client" value="${esc(order?.client || "")}" required></div>
-
-      <div class="field"><label>Contato / WhatsApp</label><input name="phone" value="${esc(order?.phone || "")}" placeholder="Opcional"></div>
-      <div class="field span2"><label>Endereço</label><input name="address" value="${esc(order?.address || "")}" placeholder="Opcional"></div>
-      <div class="field"><label>Número</label><input name="addressNumber" value="${esc(order?.addressNumber || "")}" placeholder="Opcional"></div>
-      <div class="field span2"><label>Complemento / referência</label><input name="addressExtra" value="${esc(order?.addressExtra || "")}" placeholder="Opcional"></div>
-      <div class="field span2"><label>Necessidades complementares</label><input name="needs" value="${esc(order?.needs || "")}" placeholder="Embalagem, acabamento, urgência..."></div>
-
-      <div class="field span4">
-        <label>Modelo</label>
-        <div class="modelgrid">
-          ${db.models.map(m=>`
-            <label class="modelcard ${m.id===selectedModel ? "selected":""}">
-              <input type="radio" name="modelId" value="${esc(m.id)}" ${m.id===selectedModel ? "checked":""} hidden>
-              ${m.photo ? `<img src="${esc(m.photo)}" alt="${esc(m.name)}">` : `<div class="noimg">Modelo</div>`}
-              <b>${esc(m.name)}</b>
-              <div>${money(m.price)}</div>
-            </label>
-          `).join("")}
-        </div>
-      </div>
-
-      <div class="field span4"><div id="modelSpecs" class="panel"></div></div>
-      <div class="field"><label>Quantidade</label><input name="qty" type="number" min="1" value="${Number(order?.qty || 1)}" required></div>
-      <div class="field"><label>Valor unitário</label><input id="orderPrice" name="unitPrice" type="number" step=".01" min="0" value="${order?.unitPrice ?? ""}" required></div>
-      <div class="field"><label>Desconto</label><input name="discount" type="number" step=".01" min="0" value="${Number(order?.discount || 0)}"></div>
-      <div class="field"><label>Pagamento</label><select name="payment">
-        ${["Pix","Dinheiro","Cartão","Pendente","Patrocínio"].map(x=>`<option ${x===(order?.payment || "Pix") ? "selected":""}>${x}</option>`).join("")}
-      </select></div>
-
-      <div class="field span2"><label>Cores disponíveis</label><div id="orderColors" class="colors"></div></div>
-      <div class="field"><label>Produção</label><select name="status">
-        ${["Recebido","Em produção","Pronto","Aguardando retirada","Finalizado"].map(x=>`<option ${x===(order?.status || "Recebido") ? "selected":""}>${x}</option>`).join("")}
-      </select></div>
-      <div class="field"><label>Entrega</label><select name="delivery">
-        ${["N/ENTREGUE","ENTREGUE","Retirada","Entrega local"].map(x=>`<option ${x===(order?.delivery || "N/ENTREGUE") ? "selected":""}>${x}</option>`).join("")}
-      </select></div>
-
-      <div class="field span4"><label>Personalização / instruções de fabricação</label><textarea name="notes">${esc(order?.notes || "")}</textarea></div>
-      ${actionFooter()}
+  if(!db.models.length){toast("Cadastre pelo menos um produto antes de criar um pedido.");activateTab("modelos");return;}
+  const selectedModel=order?.modelId&&getModel(order.modelId)?order.modelId:db.models[0].id;
+  const m=getModel(selectedModel),qty=Number(order?.qty||1),price=Number(order?.unitPrice??m?.price??0),disc=Number(order?.discount||0);
+  const clients=[...new Set(db.orders.map(o=>o.client).filter(Boolean))];
+  showModal(order?"Editar pedido":"Novo pedido",`<input type="hidden" name="editId" value="${esc(order?.id||"")}"><input type="hidden" name="number" value="${esc(order?.number||"#"+String(db.orders.length+1).padStart(4,"0"))}">
+  <div class="order-layout">
+    <div class="order-main">
+      <section class="order-section"><h3>Cliente e prazo</h3><div class="formgrid compact">
+        <div class="field"><label>Cliente</label><input name="client" list="clientList" autocomplete="off" value="${esc(order?.client||"")}" required autofocus><datalist id="clientList">${clients.map(c=>`<option value="${esc(c)}">`).join("")}</datalist></div>
+        <div class="field"><label>WhatsApp (opcional)</label><input name="phone" inputmode="tel" value="${esc(order?.phone||"")}"></div>
+        <div class="field span2"><label>Prazo de entrega</label><div class="deadline-row"><input name="deadline" type="date" value="${esc(order?.deadline||defaultDeadline())}" required><div class="quick">${[["Hoje",0],["Amanhã",1],["+3d",3],["+7d",7]].map(([t,d])=>`<button type="button" class="chipbtn" data-action="set-deadline" data-days="${d}">${t}</button>`).join("")}</div></div></div>
+      </div></section>
+      <section class="order-section"><h3>Produto</h3><div class="modelgrid compact-models">${db.models.map(x=>`<label class="modelcard ${x.id===selectedModel?"selected":""}"><input type="radio" name="modelId" value="${esc(x.id)}" ${x.id===selectedModel?"checked":""} hidden>${x.photo?`<img src="${esc(x.photo)}" alt="">`:`<div class="noimg">${esc((x.name||"?").slice(0,1).toUpperCase())}</div>`}<b>${esc(x.name)}</b><span>${money(x.price)}</span></label>`).join("")}</div><div id="specificFields">${orderSpecificFields(m,order||{})}</div></section>
+      <details class="optional-details"><summary>Entrega e observações (opcional)</summary><div class="formgrid compact" style="margin-top:10px"><div class="field span2"><label>Endereço</label><input name="address" value="${esc(order?.address||"")}"></div><div class="field"><label>Número</label><input name="addressNumber" value="${esc(order?.addressNumber||"")}"></div><div class="field"><label>Entrega</label><select name="delivery">${["N/ENTREGUE","ENTREGUE","Retirada","Entrega local"].map(x=>`<option ${x===(order?.delivery||"N/ENTREGUE")?"selected":""}>${x}</option>`).join("")}</select></div><div class="field span4"><label>Observação</label><textarea name="extraNotes">${esc(order?.extraNotes||"")}</textarea></div></div></details>
     </div>
-  `, saveOrderForm);
-
-  requestAnimationFrame(()=>applyOrderModel(selectedModel, order?.colors || [], !!order));
+    <div class="order-side">
+      <section class="order-section"><h3>Valores</h3><div class="formgrid compact">
+        <div class="field span4"><label>Quantidade</label><div class="stepper"><button type="button" data-action="qty-step" data-step="-1" aria-label="Diminuir">−</button><input name="qty" type="number" min="1" value="${qty}" required><button type="button" data-action="qty-step" data-step="1" aria-label="Aumentar">+</button></div></div>
+        <div class="field span2"><label>Valor unitário</label><input id="orderPrice" name="unitPrice" type="number" step=".01" min="0" value="${price}" required></div>
+        <div class="field span2"><label>Desconto</label><input name="discount" type="number" step=".01" min="0" value="${disc}"></div>
+      </div></section>
+      <section class="order-section"><h3>Pagamento</h3>
+        <div class="field"><label>Forma</label>${seg("payment",["Pix","Dinheiro","Cartão"],order?.payment||"Pix")}</div>
+        <div class="field" style="margin-top:10px"><label>Situação</label>${seg("paymentStatus",["Pendente","Pago"],order?.paymentStatus==="Pago"?"Pago":"Pendente")}</div>
+        <div class="field" style="margin-top:10px"><label>Comprovante (opcional)</label><input name="paymentProof" type="file" accept="image/*"></div>
+      </section>
+    </div>
+  </div>
+  <div class="sticky-bar"><div class="sum"><small>Total do pedido</small><b id="orderTotal">${money(Math.max(0,qty*price-disc))}</b></div><div class="actions"><button type="button" class="secondary" data-action="close-modal">Cancelar</button><button type="submit" class="primary big">${order?"Salvar alterações":"Salvar pedido"}</button></div></div>`,saveOrderForm);
 }
 
-function applyOrderModel(modelId, selectedColors=[], editing=false){
-  const model = getModel(modelId);
-  if(!model) return;
-
-  document.querySelectorAll("#form .modelcard").forEach(card=>{
-    const input = card.querySelector('input[name="modelId"]');
-    card.classList.toggle("selected", input && input.value===modelId);
-  });
-
-  const price = $("orderPrice");
-  if(price && (!editing || !price.value)) price.value = Number(model.price || 0);
-
-  const allowed = (model.colors || []).filter(id=>db.colors.some(c=>c.id===id));
-  $("modelSpecs").innerHTML = `
-    <b>${esc(model.name)}</b> • Preço padrão <b>${money(model.price)}</b> • Custo estimado <b>${money(model.unitCost || 0)}</b><br>
-    <span class="muted">${esc(model.specs || "Sem especificações adicionais.")}</span>
-  `;
-
-  $("orderColors").innerHTML = allowed.length
-    ? allowed.map(id=>{
-        const c = getColor(id);
-        return `<label class="chip"><input type="checkbox" name="colors" value="${esc(c.id)}" ${selectedColors.includes(c.id)?"checked":""}><i class="dot" style="background:${esc(c.hex)}"></i>${esc(c.name)}</label>`;
-      }).join("")
-    : `<span class="muted">Nenhuma cor liberada neste modelo.</span>`;
+function applyOrderModel(modelId,selectedColors=[],editing=false){
+ const model=getModel(modelId);if(!model)return;
+ document.querySelectorAll("#form .modelcard").forEach(card=>{const input=card.querySelector('input[name="modelId"]');card.classList.toggle("selected",input&&input.value===modelId)});
+ const price=$("orderPrice");if(price&&!editing)price.value=Number(model.price||0);
+ const target=$("specificFields");if(target)target.innerHTML=orderSpecificFields(model,{custom:{name:document.querySelector('#form [name="customName"]')?.value||""}});
 }
 
-function saveOrderForm(e){
-  e.preventDefault();
-  const fd = new FormData(e.currentTarget);
-  const f = Object.fromEntries(fd.entries());
-  const data = {
-    number:f.number,date:f.date,deadline:f.deadline,client:f.client,
-    phone:f.phone,address:f.address,addressNumber:f.addressNumber,addressExtra:f.addressExtra,needs:f.needs,
-    modelId:f.modelId,qty:Number(f.qty),unitPrice:Number(f.unitPrice),discount:Number(f.discount||0),
-    total:Math.max(0,Number(f.qty)*Number(f.unitPrice)-Number(f.discount||0)),
-    colors:fd.getAll("colors"),payment:f.payment,status:f.status,delivery:f.delivery,notes:f.notes
-  };
-
-  if(f.editId){
-    const order = db.orders.find(x=>x.id===f.editId);
-    if(!order) return;
-    Object.assign(order,data);
-    if(data.status==="Finalizado" && !order.completedAt) order.completedAt = new Date().toISOString();
-    if(data.status!=="Finalizado") order.completedAt = null;
-  }else{
-    db.orders.push({id:uid(),...data,completedAt:data.status==="Finalizado" ? new Date().toISOString() : null});
-  }
-  closeModal();
-  save();
+async function saveOrderForm(e){
+ e.preventDefault();const fd=new FormData(e.currentTarget),f=Object.fromEntries(fd.entries());
+ const old=f.editId?db.orders.find(x=>x.id===f.editId):null;
+ const proof=await imageToData(e.currentTarget.elements.paymentProof?.files?.[0]);
+ const custom={name:f.customName||"",baseColor:f.baseColor||"",letterColor:f.letterColor||""};
+ const colors=[custom.baseColor,custom.letterColor].filter(Boolean);
+ const data={number:f.number,date:old?.date||today(),createdAt:old?.createdAt||new Date().toISOString(),deadline:f.deadline,client:f.client,phone:f.phone,address:f.address,addressNumber:f.addressNumber,modelId:f.modelId,qty:Number(f.qty),unitPrice:Number(f.unitPrice),discount:Number(f.discount||0),total:Math.max(0,Number(f.qty)*Number(f.unitPrice)-Number(f.discount||0)),colors,custom,notes:custom.name,payment:f.payment,paymentStatus:f.paymentStatus||"Pendente",status:old?.status||"Recebido",delivery:f.delivery||old?.delivery||"N/ENTREGUE",extraNotes:f.extraNotes||""};
+ if(proof)data.paymentProof=proof;else if(old?.paymentProof)data.paymentProof=old.paymentProof;
+ data.paidAt=data.paymentStatus==="Pago"?(old?.paidAt||today()):null;if(old){const was=old.recipeApplied;if(was)restoreOrder(old);Object.assign(old,data);if(was)consumeOrder(old)}else db.orders.push({id:uid(),...data,completedAt:null});closeModal();save();
 }
 
 function updateOrder(id,key,value){
@@ -251,28 +204,13 @@ function updateOrder(id,key,value){
   o[key] = value;
   save();
 }
-function finishOrder(id){
-  const o = db.orders.find(x=>x.id===id);
-  if(o && confirm("Finalizar este pedido e mover para Finalizados?")){
-    o.status = "Finalizado";
-    o.completedAt = new Date().toISOString();
-    save();
-  }
-}
-function reopenOrder(id){
-  const o = db.orders.find(x=>x.id===id);
-  if(o){
-    o.status = "Em produção";
-    o.completedAt = null;
-    save();
-  }
-}
-function deleteOrder(id){
-  if(confirm("Apagar este pedido permanentemente?")){
-    db.orders = db.orders.filter(x=>x.id!==id);
-    save();
-  }
-}
+function recipeLines(o){const m=getModel(o.modelId);return (m?.recipe||[]).map(r=>({itemId:r.itemId,qty:Number(r.qty||0)*Number(o.qty||0)})).filter(r=>getItem(r.itemId)&&r.qty>0)}
+function consumeOrder(o){const missing=[];o.consumption=recipeLines(o).map(l=>{const i=getItem(l.itemId),value=l.qty*Number(i.cost||0);i.stock=Number(i.stock||0)-l.qty;i.recovered=Number(i.recovered||0)+value;if(i.stock<0)missing.push(i.name);db.recoveryLog.push({id:uid(),orderId:o.id,itemId:i.id,qty:l.qty,value,date:new Date().toISOString()});return {...l,value}});o.costTotal=o.consumption.length?o.consumption.reduce((s,c)=>s+c.value,0):null;o.recipeApplied=true;return missing}
+function restoreOrder(o){const lines=o.consumption||(o.recipeApplied?recipeLines(o).map(l=>({...l,value:l.qty*Number(getItem(l.itemId).cost||0)})):[]);lines.forEach(c=>{const i=getItem(c.itemId);if(i){i.stock=Number(i.stock||0)+c.qty;i.recovered=Math.max(0,Number(i.recovered||0)-c.value)}});db.recoveryLog=db.recoveryLog.filter(x=>x.orderId!==o.id);o.consumption=null;o.costTotal=null;o.recipeApplied=false}
+function finishOrder(id){const o=db.orders.find(x=>x.id===id);if(!o||o.completedAt)return;const missing=o.recipeApplied?[]:consumeOrder(o);o.status="Finalizado";o.completedAt=new Date().toISOString();save();toast(missing.length?"Finalizado. Estoque insuficiente: "+missing.join(", "):"Pedido finalizado",()=>reopenOrder(id))}
+function reopenOrder(id){const o=db.orders.find(x=>x.id===id);if(!o)return;if(o.recipeApplied)restoreOrder(o);o.status="Em produção";o.completedAt=null;save()}
+function deleteOrder(id){const o=db.orders.find(x=>x.id===id);if(o&&confirm("Apagar este pedido permanentemente?")){if(o.recipeApplied)restoreOrder(o);db.orders=db.orders.filter(x=>x.id!==id);save()}}
+function togglePaid(id){const o=db.orders.find(x=>x.id===id);if(!o)return;const paid=o.paymentStatus==="Pago";o.paymentStatus=paid?"Pendente":"Pago";o.paidAt=paid?null:today();save();toast(paid?"Pagamento marcado como pendente":"Pagamento confirmado")}
 
 function showOrderDetails(id){
   const o = db.orders.find(x=>x.id===id);
@@ -280,25 +218,25 @@ function showOrderDetails(id){
   const m = getModel(o.modelId);
   $("detailContent").innerHTML = `
     <div class="detailgrid">
-      <div class="detail"><small>Pedido</small><b>${esc(o.number)}</b></div>
+      <div class="detail"><small>Pedido</small><b>${esc(o.number)}</b></div><div class="detail"><small>Registrado em</small>${o.createdAt?new Date(o.createdAt).toLocaleString("pt-BR"):fmt(o.date)}</div>
       <div class="detail"><small>Cliente</small><b>${esc(o.client)}</b></div>
       <div class="detail"><small>Contato</small>${esc(o.phone || "-")}</div>
       <div class="detail"><small>Prazo</small>${fmt(o.deadline)}</div>
       <div class="detail"><small>Modelo</small>${esc(m?.name || "-")}</div>
       <div class="detail"><small>Quantidade</small>${Number(o.qty || 0)}</div>
       <div class="detail"><small>Cores</small>${colorHtml(o.colors)}</div>
-      <div class="detail"><small>Pagamento</small>${esc(o.payment || "-")}</div>
+      <div class="detail"><small>Pagamento</small>${esc(o.payment || "-")} • <b>${esc(o.paymentStatus||"Pendente")}</b></div>${o.paymentProof?`<div class="detail"><small>Comprovante</small>${receiptHtml(o.paymentProof)}</div>`:""}
       <div class="detail"><small>Total</small><b>${money(o.total)}</b></div>
       <div class="detail"><small>Endereço</small>${esc(`${o.address || "-"} ${o.addressNumber || ""}`)}</div>
       <div class="detail"><small>Complemento</small>${esc(o.addressExtra || "-")}</div>
       <div class="detail"><small>Entrega</small>${esc(o.delivery || "-")}</div>
     </div>
     <br>
-    <div class="note"><b>Fabricação / personalização</b><br>${esc(o.notes || "-")}${o.needs ? `<br><br><b>Necessidades:</b> ${esc(o.needs)}`:""}</div>
+    <div class="note"><b>Fabricação / personalização</b><br>${esc(o.custom?.name || o.notes || "-")}${o.extraNotes ? `<br><br><b>Observação:</b> ${esc(o.extraNotes)}`:""}</div>
     <br>
     <div class="actions">
       <button class="primary" data-action="print-order" data-id="${esc(o.id)}">🧾 Gerar nota / imprimir</button>
-      <button class="secondary" data-action="edit-order" data-id="${esc(o.id)}">✎ Editar</button>
+      <button class="secondary" data-action="edit-order" data-id="${esc(o.id)}">✎ Editar</button>${waLink(o)}
     </div>
   `;
   $("detailModal").classList.add("active");
@@ -346,50 +284,12 @@ function printOrder(id){
   setTimeout(()=>w.print(),250);
 }
 
+function urgencyClass(o){const now=new Date(),due=new Date((o.deadline||today())+"T23:59:59");if(now>due)return "order-late";if(due-now<=12*3600000)return "order-warning";return ""}
+function compactColors(o){const ids=[o.custom?.baseColor,o.custom?.letterColor].filter(Boolean);if(ids.length>=2){return ids.slice(0,2).map((id,n)=>{const c=getColor(id);return c?`<span class="color-mini" title="${esc(c.name)}"><i style="background:${esc(c.hex)}"></i>${n?"L":"B"}</span>`:""}).join("")}return (o.colors||[]).slice(0,2).map((id,n)=>{const c=getColor(id);return c?`<span class="color-mini" title="${esc(c.name)}"><i style="background:${esc(c.hex)}"></i>${n?"L":"B"}</span>`:""}).join("")||"-"}
 function renderOrders(){
-  const q = ($("busca")?.value || "").toLowerCase();
-  const active = db.orders
-    .filter(o=>!o.completedAt)
-    .filter(o=>[
-      o.number,o.client,getModel(o.modelId)?.name,o.notes,
-      ...(o.colors||[]).map(id=>getColor(id)?.name)
-    ].join(" ").toLowerCase().includes(q))
-    .sort((a,b)=>(a.deadline||"").localeCompare(b.deadline||""));
-
-  $("ordersBody").innerHTML = active.length ? active.map(o=>`
-    <tr>
-      <td><b>${esc(o.number)}</b></td>
-      <td><span class="pill ${deadlineClass(o.deadline)}">${fmt(o.deadline)} • ${deadlineText(o.deadline)}</span></td>
-      <td><b>${esc(getModel(o.modelId)?.name || "-")}</b></td>
-      <td>${Number(o.qty || 0)}</td>
-      <td>${colorHtml(o.colors)}</td>
-      <td>${esc(o.notes || o.needs || "-")}</td>
-      <td>
-        <select data-action="change-order" data-key="status" data-id="${esc(o.id)}">
-          ${["Recebido","Em produção","Pronto","Aguardando retirada"].map(x=>`<option ${x===o.status?"selected":""}>${x}</option>`).join("")}
-        </select>
-      </td>
-      <td>
-        <select data-action="change-order" data-key="delivery" data-id="${esc(o.id)}">
-          ${["N/ENTREGUE","ENTREGUE","Retirada","Entrega local"].map(x=>`<option ${x===o.delivery?"selected":""}>${x}</option>`).join("")}
-        </select>
-      </td>
-      <td><div class="actions">
-        <button class="secondary" data-action="details-order" data-id="${esc(o.id)}">Detalhes</button>
-        <button class="secondary" data-action="edit-order" data-id="${esc(o.id)}">Editar</button>
-        <button class="primary" data-action="finish-order" data-id="${esc(o.id)}">Finalizar</button>
-        <button class="danger" data-action="delete-order" data-id="${esc(o.id)}">Apagar</button>
-      </div></td>
-    </tr>
-  `).join("") : `<tr><td colspan="9" class="empty">Nenhum pedido em produção.</td></tr>`;
-
-  const critical = active.filter(o=>parseDate(o.deadline)<=parseDate(today()));
-  $("alerts").innerHTML = critical.length ? critical.map(o=>`
-    <div class="alertrow">
-      <b>${esc(o.number)} • ${esc(getModel(o.modelId)?.name || "")} • ${Number(o.qty || 0)} un.</b>
-      <span class="pill ${deadlineClass(o.deadline)}">${deadlineText(o.deadline)}</span>
-    </div>
-  `).join("") : `<div class="muted">Nenhuma prioridade crítica.</div>`;
+ const q=($("busca")?.value||"").toLowerCase();const active=db.orders.filter(o=>!o.completedAt).filter(o=>[o.client,o.phone,o.number,o.custom?.name,getModel(o.modelId)?.name,o.notes].join(" ").toLowerCase().includes(q)).filter(orderFilter).sort((a,b)=>(a.deadline||"").localeCompare(b.deadline||""));
+ $("ordersBody").innerHTML=active.length?active.map(o=>`<tr class="${urgencyClass(o)}"><td><b>${esc(o.custom?.name||o.client)}</b>${o.custom?.name&&o.client!==o.custom.name?`<small class="row-sub">${esc(o.client)}</small>`:""}</td><td><b>${esc(getModel(o.modelId)?.name||"-")}</b></td><td>${Number(o.qty||0)} un.</td><td><div class="compact-colors">${compactColors(o)}</div></td><td><b>${fmt(o.deadline).slice(0,5)}</b>${urgencyClass(o)?`<small class="row-sub">${deadlineText(o.deadline)}</small>`:""}</td><td><b>${money(o.total)}</b></td><td><button type="button" class="pay-status ${o.paymentStatus==="Pago"?"paid":"pending"}" data-action="toggle-paid" data-id="${esc(o.id)}" title="Clique para alternar">${o.paymentStatus==="Pago"?"✓ Pago":"Pendente"}</button></td><td><select class="compact-select" data-action="change-order" data-key="status" data-id="${esc(o.id)}">${["Recebido","Em produção","Pronto","Aguardando retirada"].map(x=>`<option ${x===o.status?"selected":""}>${x}</option>`).join("")}</select></td><td><div class="actions compact-actions"><button class="secondary" data-action="details-order" data-id="${esc(o.id)}">Ver</button><button class="secondary" data-action="edit-order" data-id="${esc(o.id)}">Editar</button><button class="primary" data-action="finish-order" data-id="${esc(o.id)}">Finalizar</button><button class="danger" data-action="delete-order" data-id="${esc(o.id)}" title="Excluir" aria-label="Excluir">×</button></div></td></tr>`).join(""):`<tr><td colspan="9" class="empty">Nenhum pedido em produção. Clique em “Novo pedido” (ou tecle N) para começar.</td></tr>`;
+ const critical=active.filter(o=>urgencyClass(o));$("alerts").parentElement.style.display=critical.length?"":"none";$("alerts").innerHTML=critical.length?critical.map(o=>`<div class="alertrow"><b>${esc(o.custom?.name||o.client)} • ${esc(getModel(o.modelId)?.name||"")}</b><span class="pill ${deadlineClass(o.deadline)}">${deadlineText(o.deadline)}</span></div>`).join(""):`<div class="muted">Nenhuma prioridade crítica.</div>`;
 }
 
 function renderDone(){
@@ -410,24 +310,8 @@ function renderDone(){
 
 /* ESTOQUE */
 function openStockItem(stockItem=null){
-  showModal(stockItem ? "Editar item" : "Cadastrar item", `
-    <div class="formgrid">
-      <div class="field"><label>SKU</label><input name="sku" value="${esc(stockItem?.sku||"")}" required></div>
-      <div class="field span2"><label>Nome</label><input name="name" value="${esc(stockItem?.name||"")}" required></div>
-      <div class="field"><label>Categoria</label><input name="category" value="${esc(stockItem?.category||"")}"></div>
-      <div class="field"><label>Unidade</label><select name="unit">${["un","kg","g","m","rolo","caixa"].map(x=>`<option ${x===(stockItem?.unit||"un")?"selected":""}>${x}</option>`).join("")}</select></div>
-      <div class="field"><label>Estoque atual</label><input name="stock" type="number" step=".001" min="0" value="${Number(stockItem?.stock||0)}"></div>
-      <div class="field"><label>Estoque mínimo</label><input name="min" type="number" step=".001" min="0" value="${Number(stockItem?.min||0)}"></div>
-      <div class="field"><label>Custo unitário</label><input name="cost" type="number" step=".01" min="0" value="${Number(stockItem?.cost||0)}"></div>
-      ${actionFooter()}
-    </div>
-  `, e=>{
-    e.preventDefault();
-    const f = Object.fromEntries(new FormData(e.currentTarget));
-    const data = {sku:f.sku,name:f.name,category:f.category,unit:f.unit,stock:Number(f.stock),min:Number(f.min),cost:Number(f.cost)};
-    if(stockItem) Object.assign(stockItem,data); else db.items.push({id:uid(),...data});
-    closeModal();save();
-  });
+ showModal(stockItem?"Editar item":"Cadastrar item",`<div class="item-form"><div class="item-section"><div class="item-section-title">Identificação</div><div class="formgrid compact"><div class="field"><label>SKU</label><input name="sku" value="${esc(stockItem?.sku||"")}" required></div><div class="field span2"><label>Nome</label><input name="name" value="${esc(stockItem?.name||"")}" required></div><div class="field"><label>Categoria</label><input name="category" value="${esc(stockItem?.category||"")}"></div></div></div><div class="item-section"><div class="item-section-title">Estoque</div><div class="formgrid compact"><div class="field"><label>Unidade de uso</label><select name="unit">${["un","g","kg","m","rolo","caixa"].map(x=>`<option ${x===(stockItem?.unit||"g")?"selected":""}>${x}</option>`).join("")}</select></div><div class="field"><label>Estoque atual</label><input name="stock" type="number" step=".001" min="0" value="${Number(stockItem?.stock||0)}"></div><div class="field"><label>Estoque mínimo</label><input name="min" type="number" step=".001" min="0" value="${Number(stockItem?.min||0)}"></div><div class="field"><label>Qtd. do pacote</label><input id="packageQty" name="packageQty" type="number" step=".001" min="0" value="${Number(stockItem?.packageQty||0)}" placeholder="Ex.: 1000"></div></div></div><div class="item-section"><div class="item-section-title">Compra e custo real</div><div class="formgrid compact"><div class="field"><label>Valor do produto R$</label><input id="purchasePrice" name="purchasePrice" type="number" step=".01" min="0" value="${Number(stockItem?.purchasePrice||stockItem?.recoveryTarget||0)}"></div><div class="field"><label>Frete R$</label><input id="freight" name="freight" type="number" step=".01" min="0" value="${Number(stockItem?.freight||0)}"></div><div class="field"><label>Investimento real</label><input id="realCost" readonly></div><div class="field"><label>Custo por ${esc(stockItem?.unit||"un")}</label><input id="unitUsedCost" readonly></div></div><div id="costSummary" class="cost-summary"></div></div>${actionFooter()}</div>`,e=>{e.preventDefault();const f=Object.fromEntries(new FormData(e.currentTarget));const purchasePrice=Number(f.purchasePrice||0),freight=Number(f.freight||0),packageQty=Number(f.packageQty||0),real=purchasePrice+freight,cost=packageQty?real/packageQty:real;const data={sku:f.sku,name:f.name,category:f.category,unit:f.unit,stock:Number(f.stock),min:Number(f.min),cost,packageQty,purchasePrice,freight,recoveryTarget:real,recovered:Number(stockItem?.recovered||0)};if(stockItem)Object.assign(stockItem,data);else{const it={id:uid(),...data};db.items.push(it);if(it.stock>0&&real>0)db.purchases.push({id:uid(),date:today(),supplier:"Cadastro inicial",itemId:it.id,qty:it.stock,cost:purchasePrice/it.stock,freight,total:real,payment:"Pix",note:"Estoque inicial",proof:"",status:"Pago",noCash:true,tracked:true})}closeModal();save();});
+ requestAnimationFrame(()=>{const calc=()=>{const p=Number($("purchasePrice")?.value||0),fr=Number($("freight")?.value||0),q=Number($("packageQty")?.value||0),real=p+fr,unit=q?real/q:real;if($("realCost"))$("realCost").value=money(real);if($("unitUsedCost"))$("unitUsedCost").value=money(unit);if($("costSummary"))$("costSummary").innerHTML=`<b>${money(p)}</b> produto + <b>${money(fr)}</b> frete = <b>${money(real)}</b> investimento • ${q||0} unidades de referência → <b>${money(unit)}</b> por unidade usada`;};["purchasePrice","freight","packageQty"].forEach(id=>$(id)?.addEventListener("input",calc));calc();});
 }
 
 function openPurchase(purchase=null){
@@ -444,6 +328,7 @@ function openPurchase(purchase=null){
       <div class="field"><label>Custo unitário</label><input name="cost" type="number" step=".01" min="0" value="${purchase?.cost??""}" required></div>
       <div class="field"><label>Pagamento</label><select name="payment">${["Pix","Dinheiro","Cartão","Boleto"].map(v=>`<option ${v===(purchase?.payment||"Pix")?"selected":""}>${v}</option>`).join("")}</select></div>
       <div class="field"><label>Nota / referência</label><input name="note" value="${esc(purchase?.note||"")}"></div>
+      <div class="field"><label>Frete R$</label><input name="freight" type="number" step=".01" min="0" value="${purchase?.freight??0}"></div><div class="field"><label>Situação</label><select name="status">${["Pago","Pendente"].map(v=>`<option ${v===(purchase?.status==="Pendente"?"Pendente":"Pago")?"selected":""}>${v}</option>`).join("")}</select></div>
       <div class="field span2"><label>Comprovante</label><input name="proof" type="file" accept="image/*"></div>
       ${actionFooter()}
     </div>
@@ -455,22 +340,21 @@ function openPurchase(purchase=null){
     const q = Number(fd.get("qty"));
     const c = Number(fd.get("cost"));
 
-    if(purchase){
-      const oldItem = getItem(purchase.itemId);
-      if(oldItem) oldItem.stock = Number(oldItem.stock||0) - Number(purchase.qty||0);
-      if(newItem) newItem.stock = Number(newItem.stock||0) + q;
-      Object.assign(purchase,{date:fd.get("date"),supplier:fd.get("supplier"),itemId:fd.get("itemId"),qty:q,cost:c,total:q*c,payment:fd.get("payment"),note:fd.get("note")});
-      if(proof) purchase.proof = proof;
-    }else{
-      if(newItem) newItem.stock = Number(newItem.stock||0) + q;
-      db.purchases.push({id:uid(),date:fd.get("date"),supplier:fd.get("supplier"),itemId:fd.get("itemId"),qty:q,cost:c,total:q*c,payment:fd.get("payment"),note:fd.get("note"),proof,status:"Aberta"});
-    }
-    if(newItem) newItem.cost = c;
+    const fr=Number(fd.get("freight")||0),total=q*c+fr;
+    if(purchase) revertPurchase(purchase);
+    const data={date:fd.get("date"),supplier:fd.get("supplier"),itemId:fd.get("itemId"),qty:q,cost:c,freight:fr,total,payment:fd.get("payment"),note:fd.get("note"),status:fd.get("status")};
+    let rec=purchase;
+    if(purchase){Object.assign(purchase,data);if(proof)purchase.proof=proof;}else{rec={id:uid(),...data,proof};db.purchases.push(rec);}
+    applyPurchase(rec);
     closeModal();save();
   });
 }
 
+function applyPurchase(p){const i=getItem(p.itemId);if(!i)return;i.stock=Number(i.stock||0)+Number(p.qty||0);i.recoveryTarget=Number(i.recoveryTarget||0)+Number(p.total||0);if(Number(p.qty)>0)i.cost=Number(p.total||0)/Number(p.qty);p.tracked=true}
+function revertPurchase(p){const i=getItem(p.itemId);if(!i)return;i.stock=Number(i.stock||0)-Number(p.qty||0);if(p.tracked)i.recoveryTarget=Math.max(0,Number(i.recoveryTarget||0)-Number(p.total||0));p.tracked=false}
+function renderNeeds(){const need={};db.orders.filter(o=>!o.completedAt).forEach(o=>recipeLines(o).forEach(l=>need[l.itemId]=(need[l.itemId]||0)+l.qty));const n2=v=>Number(Number(v).toFixed(2));const rows=Object.entries(need).map(([id,q])=>({i:getItem(id),q})).filter(r=>r.i);const low=db.items.filter(i=>Number(i.stock)<=Number(i.min)&&!need[i.id]);$("needsBox").innerHTML="<b>Materiais para a fila de produção</b><div class=\"recipe-list\">"+(rows.length?rows.map(({i,q})=>{const miss=q-Number(i.stock||0);return `<div class="recipe-line"><span>${esc(i.name)}</span><span>precisa ${n2(q)} ${esc(i.unit)} • tem ${n2(i.stock)} ${miss>0?`<b class="stocklow">• faltam ${n2(miss)} (≈ ${money(miss*Number(i.cost||0))})</b>`:"<b class=\"positive\">✓</b>"}</span></div>`}).join(""):"<div class=\"muted\">Nenhum pedido em aberto consome materiais.</div>")+"</div>"+(low.length?`<div class="muted">Abaixo do mínimo: ${low.map(i=>`<b>${esc(i.name)}</b> (${n2(i.stock)}/${n2(i.min)} ${esc(i.unit)})`).join(", ")}</div>`:"")}
 function deleteStockItem(id){
+  if(db.models.some(m=>(m.recipe||[]).some(r=>r.itemId===id))){alert("Este item faz parte de uma receita. Remova-o da receita antes de apagar.");return;}
   if(db.purchases.some(x=>x.itemId===id)){
     alert("Este item possui compras vinculadas. Apague ou altere as compras primeiro.");
     return;
@@ -481,32 +365,28 @@ function deleteStockItem(id){
 }
 function finishPurchase(id){
   const p = db.purchases.find(x=>x.id===id);
-  if(p){p.status="Finalizada";save();}
+  if(p){p.status="Pago";save();}
 }
 function deletePurchase(id){
   const p = db.purchases.find(x=>x.id===id);
   if(!p) return;
   if(confirm("Apagar esta compra e retirar a quantidade recebida do estoque?")){
-    const i = getItem(p.itemId);
-    if(i) i.stock = Math.max(0, Number(i.stock||0)-Number(p.qty||0));
+    revertPurchase(p);
     db.purchases = db.purchases.filter(x=>x.id!==id);
     save();
   }
 }
 
+function recoveryPct(i){const target=Number(i.recoveryTarget||0);return target?Math.min(100,Number(i.recovered||0)/target*100):0;}
+function recoveryHtml(i){const pct=recoveryPct(i),target=Number(i.recoveryTarget||0);return `<div class="recovery-cell"><div class="progress-meta"><b>${pct.toFixed(0)}%</b><span>${money(i.recovered||0)} / ${money(target)}</span></div><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>${pct>=100?`<small class="positive">✓ Reposição garantida</small>`:`<small class="muted">Faltam ${money(Math.max(0,target-Number(i.recovered||0)))}</small>`}</div>`;}
 function renderStock(){
-  $("stockBody").innerHTML = db.items.length ? db.items.map(i=>`
-    <tr><td>${esc(i.sku)}</td><td><b>${esc(i.name)}</b></td><td>${esc(i.category||"-")}</td><td>${esc(i.unit)}</td>
-    <td class="${Number(i.stock)<=Number(i.min)?"stocklow":""}">${Number(i.stock||0)}</td><td>${Number(i.min||0)}</td><td>${money(i.cost)}</td><td>${money(Number(i.stock||0)*Number(i.cost||0))}</td>
-    <td><div class="actions"><button class="secondary" data-action="edit-stock" data-id="${esc(i.id)}">Editar</button><button class="danger" data-action="delete-stock" data-id="${esc(i.id)}">Apagar</button></div></td></tr>
-  `).join("") : `<tr><td colspan="9" class="empty">Nenhum item.</td></tr>`;
-
+  $("stockBody").innerHTML = db.items.length ? db.items.map(i=>`<tr><td><b>${esc(i.name)}</b><br><small class="muted">${esc(i.sku)}</small></td><td>${esc(i.category||"-")}</td><td class="${Number(i.stock)<=Number(i.min)?"stocklow":""}">${Number(i.stock||0)} ${esc(i.unit)}</td><td>${money(i.cost)} / ${esc(i.unit)}</td><td>${recoveryHtml(i)}</td><td>${money(Number(i.stock||0)*Number(i.cost||0))}</td><td><div class="actions"><button class="secondary" data-action="edit-stock" data-id="${esc(i.id)}">Editar</button><button class="danger" data-action="delete-stock" data-id="${esc(i.id)}">Apagar</button></div></td></tr>`).join("") : `<tr><td colspan="7" class="empty">Nenhum item.</td></tr>`;
   const purchases = db.purchases.slice().reverse();
   $("purchaseBody").innerHTML = purchases.length ? purchases.map(p=>`
     <tr><td>${fmt(p.date)}</td><td>${esc(p.supplier)}</td><td>${esc(getItem(p.itemId)?.name||"-")}</td><td>${Number(p.qty||0)}</td><td>${money(p.cost)}</td><td><b>${money(p.total)}</b></td>
-    <td>${esc(p.payment||"-")}</td><td>${receiptHtml(p.proof)}</td><td><span class="pill ${p.status==="Finalizada"?"ok":"today"}">${esc(p.status||"Aberta")}</span></td>
-    <td><div class="actions"><button class="secondary" data-action="edit-purchase" data-id="${esc(p.id)}">Editar</button>${p.status!=="Finalizada"?`<button class="primary" data-action="finish-purchase" data-id="${esc(p.id)}">Finalizar</button>`:""}<button class="danger" data-action="delete-purchase" data-id="${esc(p.id)}">Apagar</button></div></td></tr>
-  `).join("") : `<tr><td colspan="10" class="empty">Nenhuma compra.</td></tr>`;
+    <td>${esc(p.payment||"-")}</td><td>${receiptHtml(p.proof)}</td><td><span class="pill ${p.status==="Pendente"?"today":"ok"}">${p.status==="Pendente"?"A pagar":"Pago"}</span></td>
+    <td><div class="actions"><button class="secondary" data-action="edit-purchase" data-id="${esc(p.id)}">Editar</button>${p.status==="Pendente"?`<button class="primary" data-action="finish-purchase" data-id="${esc(p.id)}">Marcar pago</button>`:""}<button class="danger" data-action="delete-purchase" data-id="${esc(p.id)}">Apagar</button></div></td></tr>
+  `).join("") : `<tr><td colspan="10" class="empty">Nenhuma compra.</td></tr>`;renderNeeds();
 }
 
 /* GASTOS */
@@ -514,10 +394,11 @@ function openExpense(expense=null){
   showModal(expense ? "Editar saída" : "Registrar saída", `
     <div class="formgrid">
       <div class="field"><label>Data</label><input name="date" type="date" value="${esc(expense?.date||today())}" required></div>
-      <div class="field"><label>Categoria</label><select name="category">${["Material / Insumo","Frete","Energia","Embalagem","Manutenção","Equipamento","Publicidade","Pró-labore / retirada","Outro"].map(v=>`<option ${v===(expense?.category||"Material / Insumo")?"selected":""}>${v}</option>`).join("")}</select></div>
+      <div class="field"><label>Categoria</label><select name="category">${[...(expense?.category==="Material / Insumo"?["Material / Insumo"]:[]),"Frete","Energia","Embalagem","Manutenção","Equipamento","Publicidade","Pró-labore / retirada","Outro"].map(v=>`<option ${v===(expense?.category||"Embalagem")?"selected":""}>${v}</option>`).join("")}</select></div>
       <div class="field span2"><label>Descrição</label><input name="description" value="${esc(expense?.description||"")}" required></div>
       <div class="field"><label>Valor</label><input name="value" type="number" step=".01" min="0" value="${expense?.value??""}" required></div>
       <div class="field"><label>Pagamento</label><select name="payment">${["Pix","Dinheiro","Cartão","Boleto"].map(v=>`<option ${v===(expense?.payment||"Pix")?"selected":""}>${v}</option>`).join("")}</select></div>
+      <div class="field"><label>Situação</label><select name="status">${["Pago","Pendente"].map(v=>`<option ${v===(expense?.status==="Pendente"?"Pendente":"Pago")?"selected":""}>${v}</option>`).join("")}</select></div>
       <div class="field span2"><label>Comprovante</label><input name="proof" type="file" accept="image/*"></div>
       ${actionFooter()}
     </div>
@@ -525,20 +406,20 @@ function openExpense(expense=null){
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
     const proof = await imageToData(e.currentTarget.elements.proof.files[0]);
-    const data = {date:fd.get("date"),category:fd.get("category"),description:fd.get("description"),value:Number(fd.get("value")),payment:fd.get("payment")};
+    const data = {date:fd.get("date"),category:fd.get("category"),description:fd.get("description"),value:Number(fd.get("value")),payment:fd.get("payment"),status:fd.get("status")};
     if(expense){Object.assign(expense,data);if(proof)expense.proof=proof;}
-    else db.expenses.push({id:uid(),...data,proof,status:"Aberto"});
+    else db.expenses.push({id:uid(),...data,proof});
     closeModal();save();
   });
 }
-function finishExpense(id){const x=db.expenses.find(v=>v.id===id);if(x){x.status="Finalizado";save();}}
+function finishExpense(id){const x=db.expenses.find(v=>v.id===id);if(x){x.status="Pago";save();}}
 function deleteExpense(id){if(confirm("Apagar esta saída?")){db.expenses=db.expenses.filter(x=>x.id!==id);save();}}
 function renderExpenses(){
   const expenses = db.expenses.slice().reverse();
   $("expenseBody").innerHTML = expenses.length ? expenses.map(x=>`
     <tr><td>${fmt(x.date)}</td><td>${esc(x.category)}</td><td>${esc(x.description)}</td><td><b>${money(x.value)}</b></td><td>${esc(x.payment||"-")}</td><td>${receiptHtml(x.proof)}</td>
-    <td><span class="pill ${x.status==="Finalizado"?"ok":"today"}">${esc(x.status||"Aberto")}</span></td>
-    <td><div class="actions"><button class="secondary" data-action="edit-expense" data-id="${esc(x.id)}">Editar</button>${x.status!=="Finalizado"?`<button class="primary" data-action="finish-expense" data-id="${esc(x.id)}">Finalizar</button>`:""}<button class="danger" data-action="delete-expense" data-id="${esc(x.id)}">Apagar</button></div></td></tr>
+    <td><span class="pill ${x.status==="Pendente"?"today":"ok"}">${x.status==="Pendente"?"A pagar":"Pago"}</span></td>
+    <td><div class="actions"><button class="secondary" data-action="edit-expense" data-id="${esc(x.id)}">Editar</button>${x.status==="Pendente"?`<button class="primary" data-action="finish-expense" data-id="${esc(x.id)}">Marcar pago</button>`:""}<button class="danger" data-action="delete-expense" data-id="${esc(x.id)}">Apagar</button></div></td></tr>
   `).join("") : `<tr><td colspan="8" class="empty">Nenhuma saída.</td></tr>`;
 }
 
@@ -560,7 +441,7 @@ function openModel(model=null){
     const photo = await imageToData(e.currentTarget.elements.photo.files[0]);
     const data = {name:fd.get("name"),price:Number(fd.get("price")),unitCost:Number(fd.get("unitCost")),specs:fd.get("specs"),colors:fd.getAll("colors")};
     if(model){Object.assign(model,data);if(photo)model.photo=photo;}
-    else db.models.push({id:uid(),...data,photo});
+    else db.models.push({id:uid(),...data,photo,recipe:[]});
     closeModal();save();
   });
 }
@@ -568,19 +449,7 @@ function deleteModel(id){
   if(db.orders.some(o=>o.modelId===id)){alert("Este modelo está vinculado a pedidos.");return;}
   if(confirm("Apagar este modelo?")){db.models=db.models.filter(x=>x.id!==id);save();}
 }
-function renderModels(){
-  $("modelsCards").innerHTML = db.models.length ? db.models.map(m=>`
-    <article class="modelcard">
-      ${m.photo?`<img src="${esc(m.photo)}" alt="${esc(m.name)}" data-image="${esc(m.photo)}">`:`<div class="noimg">Modelo</div>`}
-      <h3>${esc(m.name)}</h3><b>${money(m.price)}</b>
-      <div class="muted">Custo estimado: ${money(m.unitCost||0)} • Margem unitária: ${money(Number(m.price||0)-Number(m.unitCost||0))}</div>
-      <div class="muted">${esc(m.specs||"")}</div>
-      <div class="colors" style="margin-top:8px">${colorHtml(m.colors)}</div>
-      <div class="actions" style="margin-top:10px"><button class="secondary" data-action="edit-model" data-id="${esc(m.id)}">Editar</button><button class="danger" data-action="delete-model" data-id="${esc(m.id)}">Apagar</button></div>
-    </article>
-  `).join("") : `<div class="empty">Nenhum modelo cadastrado.</div>`;
-}
-
+function renderModels(){$("modelsCards").innerHTML=db.models.length?db.models.map(m=>{const rc=recipeCost(m),price=Number(m.price||0),mg=price-rc,pct=price?mg/price*100:0,ok=(m.recipe||[]).length;const dots=(m.colors||[]).map(id=>getColor(id)).filter(Boolean).map(c=>`<i class="dot big" title="${esc(c.name)}" style="background:${esc(c.hex)}"></i>`).join("");return `<article class="modelcard pcard">${m.photo?`<img src="${esc(m.photo)}" alt="${esc(m.name)}" data-image="${esc(m.photo)}">`:`<div class="noimg">${esc((m.name||"?").slice(0,1).toUpperCase())}</div>`}<div class="phead"><h3>${esc(m.name)}</h3><span class="pill ${ok?"ok":"today"}">${ok?"Receita pronta":"Sem receita"}</span></div><div class="pstats"><div><small>Preço</small><b>${money(price)}</b></div><div><small>Custo</small><b>${money(rc)}</b></div><div><small>Margem</small><b class="${mg>=0?"positive":"negative"}">${pct.toFixed(0)}%</b></div></div>${dots?`<div class="dots">${dots}</div>`:""}${m.specs?`<p class="muted pspecs">${esc(m.specs)}</p>`:""}<div class="actions"><button class="primary" data-action="edit-recipe" data-id="${esc(m.id)}">Receita</button><button class="secondary" data-action="edit-model" data-id="${esc(m.id)}">Editar</button><button class="danger" data-action="delete-model" data-id="${esc(m.id)}">Apagar</button></div></article>`}).join(""):`<div class="empty">Nenhum produto cadastrado.</div>`;}
 function editColor(id){
   const c = getColor(id);
   if(!c) return;
@@ -613,6 +482,11 @@ function renderColors(){
   `).join("");
 }
 
+/* RECEITAS */
+function recipeCost(m){return (m.recipe||[]).reduce((sum,r)=>sum+Number(r.qty||0)*Number(getItem(r.itemId)?.cost||0),0);}
+function openRecipe(model){if(!model)return;if(!db.items.length){alert("Cadastre os insumos no Estoque antes de montar uma receita.");activateTab("estoque");return;}showModal("Receita • "+model.name,`<div class="panel"><b>Receita para 1 unidade</b><p class="muted">Quanto de cada insumo é usado para fabricar uma unidade.</p></div>${db.items.map(i=>{const r=(model.recipe||[]).find(x=>x.itemId===i.id);return `<div class="toolbar" style="border-bottom:1px solid #eee;padding:8px 0"><label style="flex:1"><b>${esc(i.name)}</b><br><small class="muted">${money(i.cost)} por ${esc(i.unit)}</small></label><input style="max-width:140px" type="number" step=".001" min="0" name="recipe_${esc(i.id)}" value="${Number(r?.qty||0)}"><span>${esc(i.unit)} / un.</span></div>`}).join("")}${actionFooter()}`,e=>{e.preventDefault();const fd=new FormData(e.currentTarget);model.recipe=db.items.map(i=>({itemId:i.id,qty:Number(fd.get("recipe_"+i.id)||0)})).filter(r=>r.qty>0);model.unitCost=recipeCost(model);closeModal();save();});}
+function renderRecipes(){const el=$("recipeCards");if(!el)return;el.innerHTML=db.models.length?db.models.map(m=>{const cost=recipeCost(m),margin=Number(m.price||0)-cost;return `<article class="recipe-card"><h3>${esc(m.name)}</h3><div class="muted">Preço ${money(m.price)} • Custo <b>${money(cost)}</b> • Margem ${money(margin)}</div><div class="recipe-list">${(m.recipe||[]).length?(m.recipe||[]).map(r=>{const i=getItem(r.itemId);return i?`<div class="recipe-line"><span>${esc(i.name)}</span><b>${Number(r.qty)} ${esc(i.unit)}</b></div>`:""}).join(""):`<div class="empty">Receita ainda não configurada.</div>`}</div><button class="primary" data-action="edit-recipe" data-id="${esc(m.id)}">${(m.recipe||[]).length?"Editar receita":"Criar receita"}</button></article>`}).join(""):`<div class="empty">Cadastre produtos primeiro.</div>`;}
+
 /* FINANCEIRO */
 function filterPeriod(type, source, dateKey){
   const end = new Date();
@@ -629,63 +503,27 @@ function filterPeriod(type, source, dateKey){
   });
 }
 
+function orderCost(o){if(o.costTotal!=null)return Number(o.costTotal);const m=getModel(o.modelId);return Number((m?.recipe||[]).length?recipeCost(m):m?.unitCost||0)*Number(o.qty||0)}
+const isPaid=x=>x.status!=="Pendente";
 function renderFinance(){
-  const p = $("finPeriod").value;
-  const sales = filterPeriod(p,db.orders.filter(o=>o.completedAt),"completedAt");
-  const expenses = filterPeriod(p,db.expenses,"date");
-  const purchases = filterPeriod(p,db.purchases,"date");
-
-  const revenue = sales.reduce((s,o)=>s+Number(o.total||0),0);
-  const direct = sales.reduce((s,o)=>s+Number(getModel(o.modelId)?.unitCost||0)*Number(o.qty||0),0);
-  const gross = revenue-direct;
-  const expenseTotal = expenses.reduce((s,x)=>s+Number(x.value||0),0);
-  const purchaseOut = purchases.reduce((s,x)=>s+Number(x.total||0),0);
-  const net = gross-expenseTotal;
-
-  const opening = Number(db.settings.openingBalance||0);
-  const cash = opening+revenue-expenseTotal-purchaseOut;
-  const reinvestPct = db.settings.reinvestPct ?? 30;
-  const reinvest = Math.max(0,net*reinvestPct/100);
-  const dailyReserve = Number(db.settings.dailyReserve||0);
-  const days = p==="today"?1:p==="7"?7:p==="15"?15:p==="month"?new Date().getDate():1;
-  const reserve = dailyReserve*days;
-  const available = net-reinvest-reserve;
-
-  $("openingBalance").value = opening;
-  $("reinvestPct").value = reinvestPct;
-  $("dailyReserve").value = dailyReserve;
-
-  $("finRevenue").textContent=money(revenue);
-  $("finDirect").textContent=money(direct);
-  $("finGross").textContent=money(gross);
-  $("finExpenses").textContent=money(expenseTotal);
-  $("finNet").textContent=money(net);
-  $("finCash").textContent=money(cash);
-  $("finReinvest").textContent=money(reinvest);
-  $("finAvailable").textContent=money(available);
-
-  $("finNet").className = net>=0 ? "positive" : "negative";
-  $("finCash").className = cash>=0 ? "positive" : "negative";
-
-  const margin = revenue ? gross/revenue*100 : 0;
-  $("financeAdvice").innerHTML = `
-    <b>Leitura do período:</b> margem bruta estimada de <b>${margin.toFixed(1)}%</b>.
-    As compras de estoque consumiram <b>${money(purchaseOut)}</b> do caixa.
-    ${net>0
-      ? `Com a regra atual, separe <b>${money(reinvest)}</b> para reinvestimento e <b>${money(reserve)}</b> como reserva. Restariam <b>${money(available)}</b> antes de impostos e retiradas pessoais.`
-      : `O período não apresenta lucro líquido positivo. Antes de retirar dinheiro, revise preços, custos diretos e despesas.`}
-    <br><span class="muted">Para melhorar a precisão, inclua no custo unitário de cada modelo: filamento, argola/acessórios, embalagem, energia, perdas médias e outros custos diretamente ligados à fabricação.</span>
-  `;
-
-  $("profitBody").innerHTML = db.models.length ? db.models.map(m=>{
-    const ms = sales.filter(o=>o.modelId===m.id);
-    const qty = ms.reduce((s,o)=>s+Number(o.qty||0),0);
-    const rev = ms.reduce((s,o)=>s+Number(o.total||0),0);
-    const cost = qty*Number(m.unitCost||0);
-    const gp = rev-cost;
-    const mg = rev ? gp/rev*100 : 0;
-    return `<tr><td><b>${esc(m.name)}</b></td><td>${qty}</td><td>${money(rev)}</td><td>${money(cost)}</td><td>${money(gp)}</td><td>${mg.toFixed(1)}%</td><td>${money(Math.max(0,gp*reinvestPct/100))}</td></tr>`;
-  }).join("") : `<tr><td colspan="7" class="empty">Cadastre modelos e custos.</td></tr>`;
+  const p=$("finPeriod").value,sum=(a,f)=>a.reduce((t,x)=>t+Number(f(x)||0),0);
+  const sales=filterPeriod(p,db.orders.filter(o=>o.completedAt),"completedAt");
+  const exps=filterPeriod(p,db.expenses,"date").filter(isPaid);
+  const draws=exps.filter(x=>x.category==="Pró-labore / retirada"),opexList=exps.filter(x=>!["Pró-labore / retirada","Material / Insumo"].includes(x.category));
+  const revenue=sum(sales,o=>o.total),direct=sum(sales,orderCost),gross=revenue-direct,opex=sum(opexList,x=>x.value),drawTotal=sum(draws,x=>x.value),net=gross-opex;
+  const purchaseOut=sum(filterPeriod(p,db.purchases,"date").filter(x=>isPaid(x)&&!x.noCash),x=>x.total);
+  const cashIn=sum(db.orders.filter(o=>o.paymentStatus==="Pago"),o=>o.total);
+  const cashOut=sum(db.expenses.filter(isPaid),x=>x.value)+sum(db.purchases.filter(x=>isPaid(x)&&!x.noCash),x=>x.total);
+  const opening=Number(db.settings.openingBalance||0),cash=opening+cashIn-cashOut;
+  const receivable=db.orders.filter(o=>o.paymentStatus!=="Pago"),toPay=db.expenses.filter(x=>!isPaid(x)).map(x=>Number(x.value||0)).concat(db.purchases.filter(x=>!isPaid(x)).map(x=>Number(x.total||0)));
+  const reinvestPct=db.settings.reinvestPct??30,reinvest=Math.max(0,net*reinvestPct/100),dailyReserve=Number(db.settings.dailyReserve||0);
+  const days=p==="today"?1:p==="7"?7:p==="15"?15:p==="month"?new Date().getDate():1,reserve=dailyReserve*days,available=net-reinvest-reserve;
+  $("openingBalance").value=opening;$("reinvestPct").value=reinvestPct;$("dailyReserve").value=dailyReserve;
+  [["finRevenue",revenue],["finDirect",direct],["finGross",gross],["finExpenses",opex],["finNet",net],["finCash",cash],["finReinvest",reinvest],["finAvailable",available],["finReceivable",sum(receivable,o=>o.total)],["finPayable",toPay.reduce((a,b)=>a+b,0)],["finDraws",drawTotal],["finPurchases",purchaseOut],["finTicket",sales.length?revenue/sales.length:0]].forEach(([id,v])=>$(id).textContent=money(v));
+  $("finNet").className=net>=0?"positive":"negative";$("finCash").className=cash>=0?"positive":"negative";
+  const margin=revenue?gross/revenue*100:0;
+  $("financeAdvice").innerHTML=`<b>Leitura do período:</b> margem bruta de <b>${margin.toFixed(1)}%</b>. Compras de estoque (${money(purchaseOut)}) saem do caixa, mas só entram no custo quando o material é consumido ao finalizar o pedido, então nada é contado duas vezes. ${net>0?`Separe <b>${money(reinvest)}</b> para reinvestir e <b>${money(reserve)}</b> de reserva; sobram <b>${money(available)}</b>.`:"Sem lucro líquido positivo no período: revise preços, custos e despesas antes de retirar dinheiro."}${receivable.length?` Há <b>${money(sum(receivable,o=>o.total))}</b> a receber.`:""}`;
+  $("profitBody").innerHTML=db.models.length?db.models.map(m=>{const ms=sales.filter(o=>o.modelId===m.id),qty=sum(ms,o=>o.qty),rev=sum(ms,o=>o.total),cost=sum(ms,orderCost);return {m,qty,rev,cost,gp:rev-cost}}).sort((a,b)=>b.gp-a.gp).map(r=>`<tr><td><b>${esc(r.m.name)}</b></td><td>${r.qty}</td><td>${money(r.rev)}</td><td>${money(r.cost)}</td><td>${money(r.gp)}</td><td>${(r.rev?r.gp/r.rev*100:0).toFixed(1)}%</td><td>${money(Math.max(0,r.gp*reinvestPct/100))}</td></tr>`).join(""):`<tr><td colspan="7" class="empty">Cadastre modelos e custos.</td></tr>`;
 }
 
 function renderKpis(){
@@ -702,10 +540,12 @@ function backup(){
   const blob = new Blob([JSON.stringify(db,null,2)],{type:"application/json"});
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "prime-backup-v8.json";
+  a.download = "prime-backup-"+today()+".json";db.settings.lastBackup=today();localStorage.setItem(STORAGE_KEY,JSON.stringify(db));toast("Backup exportado");
   a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
+
+function importBackupFile(file){if(!file)return;const reader=new FileReader();reader.onload=()=>{try{const data=JSON.parse(reader.result);if(!data||!Array.isArray(data.orders))throw new Error();if(!confirm("Importar este backup e substituir os dados atuais deste protótipo?"))return;db=data;db.colors=db.colors||[];db.models=db.models||[];db.orders=db.orders||[];db.items=db.items||[];db.purchases=db.purchases||[];db.expenses=db.expenses||[];db.settings=db.settings||{};db.recoveryLog=db.recoveryLog||[];save();alert("Backup restaurado com sucesso.");}catch{alert("Arquivo de backup inválido.")}};reader.readAsText(file)}
 
 function render(){
   renderOrders();
@@ -713,6 +553,7 @@ function render(){
   renderStock();
   renderExpenses();
   renderModels();
+  renderRecipes();
   renderColors();
   renderFinance();
   renderKpis();
@@ -723,6 +564,8 @@ $("tabs").addEventListener("click",e=>{
   const btn = e.target.closest("[data-tab]");
   if(btn) activateTab(btn.dataset.tab);
 });
+document.addEventListener("click",e=>{const f=e.target.closest("[data-filter]");if(!f)return;prodFilter=f.dataset.filter;document.querySelectorAll("[data-filter]").forEach(b=>b.classList.toggle("active",b===f));renderOrders()});
+$("form").addEventListener("input",e=>{updateOrderTotal();if(e.target.name==="client"){const ph=$("form").elements.phone,o=db.orders.slice().reverse().find(x=>x.client===e.target.value&&x.phone);if(o&&ph&&!ph.value)ph.value=o.phone}});
 $("busca").addEventListener("input",renderOrders);
 $("btnNovoPedido").addEventListener("click",()=>openOrder());
 $("btnNovoItem").addEventListener("click",()=>openStockItem());
@@ -730,6 +573,8 @@ $("btnNovaCompra").addEventListener("click",()=>openPurchase());
 $("btnNovaSaida").addEventListener("click",()=>openExpense());
 $("btnNovoModelo").addEventListener("click",()=>openModel());
 $("btnBackup").addEventListener("click",backup);
+$("btnImportBackup")?.addEventListener("click",()=>$("backupFile")?.click());
+$("backupFile")?.addEventListener("change",e=>importBackupFile(e.target.files[0]));
 $("btnCloseModal").addEventListener("click",closeModal);
 $("btnCloseDetail").addEventListener("click",()=>$("detailModal").classList.remove("active"));
 $("imgModal").addEventListener("click",()=>$("imgModal").classList.remove("active"));
@@ -757,7 +602,7 @@ document.addEventListener("click",e=>{
     const radio = card.querySelector('input[name="modelId"]');
     if(radio){
       radio.checked=true;
-      applyOrderModel(radio.value,[],false);
+      applyOrderModel(radio.value,[],false);updateOrderTotal();
     }
     return;
   }
@@ -773,6 +618,9 @@ document.addEventListener("click",e=>{
     case "reopen-order": reopenOrder(id); break;
     case "delete-order": deleteOrder(id); break;
     case "print-order": printOrder(id); break;
+    case "toggle-paid": togglePaid(id); break;
+    case "set-deadline": {const d=new Date();d.setDate(d.getDate()+Number(btn.dataset.days));const el=document.querySelector('#form [name="deadline"]');if(el)el.value=localISO(d);break;}
+    case "qty-step": {const el=document.querySelector('#form [name="qty"]');if(el){el.value=Math.max(1,Number(el.value||1)+Number(btn.dataset.step));updateOrderTotal();}break;}
     case "edit-stock": openStockItem(getItem(id)); break;
     case "delete-stock": deleteStockItem(id); break;
     case "edit-purchase": openPurchase(db.purchases.find(x=>x.id===id)); break;
@@ -782,6 +630,7 @@ document.addEventListener("click",e=>{
     case "finish-expense": finishExpense(id); break;
     case "delete-expense": deleteExpense(id); break;
     case "edit-model": openModel(getModel(id)); break;
+    case "edit-recipe": openRecipe(getModel(id)); break;
     case "delete-model": deleteModel(id); break;
     case "edit-color": editColor(id); break;
     case "delete-color": deleteColor(id); break;
@@ -794,4 +643,6 @@ document.addEventListener("change",e=>{
 });
 
 save();
+{const lb=db.settings.lastBackup;if(db.orders.length&&(!lb||(Date.now()-parseDate(lb))/864e5>7))setTimeout(()=>toast("Faça um backup: seus dados ficam só neste navegador."),1500);}
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeModal();$("detailModal").classList.remove("active");$("imgModal").classList.remove("active");return}if(e.target.closest("input,select,textarea")||e.ctrlKey||e.metaKey||e.altKey)return;if(e.key==="/"){e.preventDefault();$("busca").focus()}else if(e.key.toLowerCase()==="n"&&!document.querySelector(".modal.active")&&$("producao").classList.contains("active")){e.preventDefault();openOrder()}});
 })();
